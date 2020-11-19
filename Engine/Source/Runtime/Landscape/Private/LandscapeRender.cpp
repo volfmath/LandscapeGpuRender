@@ -749,6 +749,22 @@ void FLandscapeRenderSystem::RegisterEntity(FLandscapeComponentSceneProxy* Scene
 	SetSectionLODSettings(SceneProxy->ComponentBase, SceneProxy->LODSettings);
 	SetSectionOriginAndRadius(SceneProxy->ComponentBase, FVector4(SceneProxy->GetBounds().Origin, SceneProxy->GetBounds().SphereRadius));
 	SetSceneProxy(SceneProxy->ComponentBase, SceneProxy);
+
+	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
+	{
+		//分Cluster要按照一个Component内来分,但是坐标要根据总Size来计算
+		//uint32 ComponentClusterSize = (SceneProxy->ComponentSizeQuads + SceneProxy->NumSubsections) / FLandscapeClusterVertexBuffer::ClusterQuadSize;
+		//FIntPoint AllClustetSize = Size * ComponentClusterSize;
+		//ClusterBase.Empty(AllClustetSize.X * AllClustetSize.Y);
+
+		//for (int32 Y = 0; Y < AllClustetSize.Y; Y++){
+		//	for (int32 X = 0; X < AllClustetSize.X; X++){
+		//		ClusterBase.Emplace();
+		//	}
+		//}
+
+	}
+	//@StarLight code - END LandScapeInstance, Added by yanjianhong
 }
 
 void FLandscapeRenderSystem::UnregisterEntity(FLandscapeComponentSceneProxy* SceneProxy)
@@ -1852,7 +1868,11 @@ FPrimitiveViewRelevance FLandscapeComponentSceneProxy::GetViewRelevance(const FS
 #else
 		IsSelected() ||
 #endif
-		!IsStaticPathAvailable())
+		!IsStaticPathAvailable() || 
+//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
+	    (FeatureLevel == ERHIFeatureLevel::ES3_1) && CVarMobileAllowLandScapeInstance.GetValueOnRenderThread() != 0
+//@StarLight code - END LandScapeInstance, Added by yanjianhong
+		)
 	{
 		Result.bDynamicRelevance = true;
 	}
@@ -3899,19 +3919,44 @@ void FLandscapeSharedBuffers::CreateGrassIndexBuffer()
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
 template<typename IndexType>
 void FLandscapeSharedBuffers::CreateClusterIndexBuffers() {
-
-	uint32 ClusterMaxLOD = FMath::CeilLogTwo(FLandscapeClusterVertexBuffer::ClusterQuadSize) - 1;
-	for (uint32 CurLod = ClusterMaxLOD; CurLod >= 0; CurLod--) {
+	//Component的LOD等级已经无用,最大LOD Quad为1
+	for (uint32 CurLod = 0; CurLod < NumClusterLOD; CurLod++) {
 		TArray<IndexType> NewIndices;
-		NewIndices.Empty();
-	}
+		uint16 LodClusterQuadSize = FLandscapeClusterVertexBuffer::ClusterQuadSize >> CurLod;
+		uint32 ExpectedNumIndices = LodClusterQuadSize * LodClusterQuadSize * 6;
+		NewIndices.Empty(ExpectedNumIndices);
 
+		for (uint32 y = 0; y < LodClusterQuadSize; ++y) {
+			for (uint32 x = 0; x < LodClusterQuadSize; ++x) {
+				IndexType i00 = y * LodClusterQuadSize + x;
+				IndexType i10 = y * LodClusterQuadSize + x + 1;
+				IndexType i11 = (y + 1) * LodClusterQuadSize + x + 1;
+				IndexType i01 = (y + 1) * LodClusterQuadSize + x;
+
+				NewIndices.Add(i00);
+				NewIndices.Add(i11);
+				NewIndices.Add(i10);
+
+				NewIndices.Add(i00);
+				NewIndices.Add(i01);
+				NewIndices.Add(i11);
+			}
+		}
+
+		FRawStaticIndexBuffer16or32<IndexType>* RawIndexBuffer = new FRawStaticIndexBuffer16or32<IndexType>(false);
+		RawIndexBuffer->AssignNewBuffer(NewIndices);
+		RawIndexBuffer->InitResource();
+		ClusterIndexBuffers[CurLod] = static_cast<FIndexBuffer*>(RawIndexBuffer);
+	}
 }
 //@StarLight code - END LandScapeInstance, Added by yanjianhong
 
 
 FLandscapeSharedBuffers::FLandscapeSharedBuffers(const int32 InSharedBuffersKey, const int32 InSubsectionSizeQuads, const int32 InNumSubsections, const ERHIFeatureLevel::Type InFeatureLevel, const bool bRequiresAdjacencyInformation, int32 NumOccluderVertices)
-	: SharedBuffersKey(InSharedBuffersKey)
+//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
+	: NumVertices(0)
+//@StarLight code - END LandScapeInstance, Added by yanjianhong
+	, SharedBuffersKey(InSharedBuffersKey)
 	, NumIndexBuffers(FMath::CeilLogTwo(InSubsectionSizeQuads + 1))
 	, SubsectionSizeVerts(InSubsectionSizeQuads + 1)
 	, NumSubsections(InNumSubsections)
@@ -3920,24 +3965,25 @@ FLandscapeSharedBuffers::FLandscapeSharedBuffers(const int32 InSharedBuffersKey,
 	, VertexBuffer(nullptr)
 	, AdjacencyIndexBuffers(nullptr)
 	, bUse32BitIndices(false)
+	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
+	, bUseInstanceLandscape(false)
+	, NumClusterLOD(FMath::CeilLogTwo(FLandscapeClusterVertexBuffer::ClusterQuadSize) + 1)
+	, ClusterVertexBuffer(nullptr)
+	, ClusterVertexFactory(nullptr)
+	//@StarLight code - END LandScapeInstance, Added by yanjianhong
 #if WITH_EDITOR
 	, GrassIndexBuffer(nullptr)
 #endif
-	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-	, bUseInstanceLandscape(false)
-	, ClusterVertexBuffer(nullptr)
-	, NumVertices(0)
-	//@StarLight code - END LandScapeInstance, Added by yanjianhong
 {
-
 	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
 	bUseInstanceLandscape = (InFeatureLevel == ERHIFeatureLevel::ES3_1) && CVarMobileAllowLandScapeInstance.GetValueOnRenderThread() != 0;
 
 	if (bUseInstanceLandscape) {
 		ClusterVertexBuffer = new FLandscapeClusterVertexBuffer();
-		//所有LOD等级的IndexBuffer
-		ClusterIndexBuffers.Empty(FMath::CeilLogTwo(FLandscapeClusterVertexBuffer::ClusterQuadSize));
-
+		//退化到Quad为1
+		check(ClusterIndexBuffers.Num() == 0);
+		ClusterIndexBuffers.AddZeroed(NumClusterLOD);
+		CreateClusterIndexBuffers<uint16>();
 	}
 	else {
 		NumVertices = FMath::Square(SubsectionSizeVerts) * FMath::Square(NumSubsections);
@@ -3988,13 +4034,13 @@ FLandscapeSharedBuffers::FLandscapeSharedBuffers(const int32 InSharedBuffersKey,
 FLandscapeSharedBuffers::~FLandscapeSharedBuffers()
 {
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-
 	if (bUseInstanceLandscape) {
 		for (int32 i = 0; i < NumIndexBuffers; i++) {
 			ClusterIndexBuffers[i]->ReleaseResource();
 			delete ClusterIndexBuffers[i];
 		}
 		delete ClusterVertexBuffer;
+		delete ClusterVertexFactory;
 	}
 	else {
 		delete VertexBuffer;
@@ -4027,11 +4073,8 @@ FLandscapeSharedBuffers::~FLandscapeSharedBuffers()
 		}
 #endif
 		delete AdjacencyIndexBuffers;
+		delete VertexFactory;
 	}
-
-	//不管是否使用Instance,总要释放VertexFactory
-	delete VertexFactory;
-
 //@StarLight code - END LandScapeInstance, Added by yanjianhong
 
 	if (OccluderIndicesSP.IsValid())

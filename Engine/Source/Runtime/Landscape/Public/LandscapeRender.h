@@ -116,12 +116,12 @@ END_GLOBAL_SHADER_PARAMETER_STRUCT()
 typedef TUniformBufferRef<FLandscapeVertexFactoryMVFParameters> FLandscapeVertexFactoryMVFUniformBufferRef;
 
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeSectionLODUniformParameters, )
-	SHADER_PARAMETER(FIntPoint, Min)
-	SHADER_PARAMETER(FIntPoint, Size)
-	SHADER_PARAMETER_SRV(Buffer<float>, SectionLOD)
-	SHADER_PARAMETER_SRV(Buffer<float>, SectionLODBias)
-	SHADER_PARAMETER_SRV(Buffer<float>, SectionTessellationFalloffC)
-	SHADER_PARAMETER_SRV(Buffer<float>, SectionTessellationFalloffK)
+SHADER_PARAMETER(FIntPoint, Min)
+SHADER_PARAMETER(FIntPoint, Size)
+SHADER_PARAMETER_SRV(Buffer<float>, SectionLOD)
+SHADER_PARAMETER_SRV(Buffer<float>, SectionLODBias)
+SHADER_PARAMETER_SRV(Buffer<float>, SectionTessellationFalloffC)
+SHADER_PARAMETER_SRV(Buffer<float>, SectionTessellationFalloffK)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeFixedGridUniformShaderParameters, )
@@ -341,8 +341,10 @@ public:
 
 	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
 	bool bUseInstanceLandscape;
+	uint32 NumClusterLOD;
 	class FLandscapeClusterVertexBuffer* ClusterVertexBuffer;
 	TArray<FIndexBuffer*> ClusterIndexBuffers;
+	FLandscapeVertexFactory* ClusterVertexFactory;
 	//@StarLight code - END LandScapeInstance, Added by yanjianhong
 
 #if WITH_EDITOR
@@ -357,7 +359,7 @@ public:
 	FLandscapeSharedBuffers(int32 SharedBuffersKey, int32 SubsectionSizeQuads, int32 NumSubsections, ERHIFeatureLevel::Type FeatureLevel, bool bRequiresAdjacencyInformation, int32 NumOcclusionVertices);
 
 	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-	template <typename INDEX_TYPE>
+	template <typename IndexType>
 	void CreateClusterIndexBuffers();
 	//@StarLight code - END LandScapeInstance, Added by yanjianhong
 
@@ -573,6 +575,11 @@ struct FLandscapeRenderSystem
 	FShaderResourceViewRHIRef SectionTessellationFalloffKSRV;
 
 	TUniformBufferRef<FLandscapeSectionLODUniformParameters> UniformBuffer;
+
+	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
+	TUniformBufferRef<FLandscapeInstanceUniformParameters> ClusterInstanceUniformBuffer;
+	TArray<FIntPoint> ClusterBase;
+	//@StarLight code - END LandScapeInstance, Added by yanjianhong
 
 	FCriticalSection CachedValuesCS;
 	TMap<const FSceneView*, TResourceArray<float>> CachedSectionLODValues;
