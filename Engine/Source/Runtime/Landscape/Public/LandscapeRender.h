@@ -99,7 +99,7 @@ SHADER_PARAMETER(FVector4, LandscapeLightmapScaleBias)
 SHADER_PARAMETER(FVector4, SubsectionSizeVertsLayerUVPan)
 SHADER_PARAMETER(FVector4, SubsectionOffsetParams)
 SHADER_PARAMETER(FVector4, LightmapSubsectionOffsetParams)
-	SHADER_PARAMETER(FVector4, BlendableLayerMask)
+SHADER_PARAMETER(FVector4, BlendableLayerMask)
 SHADER_PARAMETER(FMatrix, LocalToWorldNoScaling)
 SHADER_PARAMETER_TEXTURE(Texture2D, HeightmapTexture)
 SHADER_PARAMETER_SAMPLER(SamplerState, HeightmapTextureSampler)
@@ -127,6 +127,32 @@ END_GLOBAL_SHADER_PARAMETER_STRUCT()
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeFixedGridUniformShaderParameters, )
 	SHADER_PARAMETER(FVector4, LodValues)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
+
+
+//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
+BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeComponentClusterUniformBuffer, LANDSCAPE_API)
+SHADER_PARAMETER(FVector4, HeightmapUVScaleBias)
+SHADER_PARAMETER(FVector4, WeightmapUVScaleBias)
+SHADER_PARAMETER(FVector4, LandscapeLightmapScaleBias)
+SHADER_PARAMETER(FVector4, SubsectionSizeVertsLayerUVPan)
+SHADER_PARAMETER(FVector4, SubsectionOffsetParams)
+SHADER_PARAMETER(FVector4, LightmapSubsectionOffsetParams)
+SHADER_PARAMETER(FVector4, BlendableLayerMask)
+SHADER_PARAMETER(FMatrix, LocalToWorldNoScaling)
+SHADER_PARAMETER_TEXTURE(Texture2D, HeightmapTexture)
+SHADER_PARAMETER_SAMPLER(SamplerState, HeightmapTextureSampler)
+SHADER_PARAMETER_TEXTURE(Texture2D, NormalmapTexture)
+SHADER_PARAMETER_SAMPLER(SamplerState, NormalmapTextureSampler)
+//SHADER_PARAMETER_TEXTURE(Texture2D, XYOffsetmapTexture)
+//SHADER_PARAMETER_SAMPLER(SamplerState, XYOffsetmapTextureSampler)
+END_GLOBAL_SHADER_PARAMETER_STRUCT()
+
+
+BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeClusterLODUniformBuffer, )
+SHADER_PARAMETER(FIntPoint, Min)
+SHADER_PARAMETER(FIntPoint, Size)
+END_GLOBAL_SHADER_PARAMETER_STRUCT()
+//@StarLight code - END LandScapeInstance, Added by yanjianhong
 
 /* Data needed for the landscape vertex factory to set the render state for an individual batch element */
 struct FLandscapeBatchElementParams
@@ -577,8 +603,11 @@ struct FLandscapeRenderSystem
 	TUniformBufferRef<FLandscapeSectionLODUniformParameters> UniformBuffer;
 
 	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-	TUniformBufferRef<FLandscapeInstanceUniformParameters> ClusterInstanceUniformBuffer;
-	TArray<FIntPoint> ClusterBase;
+	TUniformBufferRef<FLandscapeClusterLODUniformBuffer> ClusterLodUniformBuffer;
+	TArray<float> ClusterLODValues_CPU;
+	FReadBuffer ClusterLODValues_GPU;
+	bool bUseInstanceLandscape;
+	uint32 PerComponentClusterSize;
 	//@StarLight code - END LandScapeInstance, Added by yanjianhong
 
 	FCriticalSection CachedValuesCS;
@@ -673,6 +702,10 @@ struct FLandscapeRenderSystem
 		, NumEntitiesWithTessellation(0)
 		, Min(MAX_int32, MAX_int32)
 		, Size(EForceInit::ForceInitToZero)
+		//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
+		, bUseInstanceLandscape(false)
+		, PerComponentClusterSize(0)
+		//@StarLight code - END LandScapeInstance, Added by yanjianhong
 		, CachedView(nullptr)
 	{
 		SectionLODValues.SetAllowCPUAccess(true);
@@ -680,6 +713,24 @@ struct FLandscapeRenderSystem
 		SectionTessellationFalloffC.SetAllowCPUAccess(true);
 		SectionTessellationFalloffK.SetAllowCPUAccess(true);
 	}
+
+	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
+	FLandscapeRenderSystem(bool InUseInstance, uint32 InComponentClusterSize)
+		: NumRegisteredEntities(0)
+		, NumEntitiesWithTessellation(0)
+		, Min(MAX_int32, MAX_int32)
+		, Size(EForceInit::ForceInitToZero)
+		, bUseInstanceLandscape(InUseInstance)
+		, PerComponentClusterSize(InComponentClusterSize)
+		, CachedView(nullptr)
+	{
+		//#TODO: delete
+		SectionLODValues.SetAllowCPUAccess(true);
+		SectionLODBiases.SetAllowCPUAccess(true);
+		SectionTessellationFalloffC.SetAllowCPUAccess(true);
+		SectionTessellationFalloffK.SetAllowCPUAccess(true);
+	}
+	//@StarLight code - END LandScapeInstance, Added by yanjianhong
 
 	void RegisterEntity(FLandscapeComponentSceneProxy* SceneProxy);
 
@@ -735,6 +786,11 @@ struct FLandscapeRenderSystem
 	void FetchHeightmapLODBiases();
 
 	void RecreateBuffers(const FSceneView* InView = nullptr);
+
+	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
+	void RecreateClusterBuffers();
+	void UpdateCluterGPUBuffer();
+	//@StarLight code - END LandScapeInstance, Added by yanjianhong
 
 	void EndFrame();
 };
@@ -859,6 +915,9 @@ public:
 #endif
 
 	friend FLandscapeRenderSystem;
+	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
+	friend FLandscapeNeighborInfo;
+	//@StarLight code - END LandScapeInstance, Added by yanjianhong
 
 protected:
 	int8						MaxLOD;		// Maximum LOD level, user override possible

@@ -150,34 +150,33 @@ public:
 	static bool ShouldCompilePermutation(const FVertexFactoryShaderPermutationParameters& Parameters);
 };
 
+
+
+
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong---------------------------------------------------------------
 
-BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeComponentClusterUniformBuffer, LANDSCAPE_API)
-SHADER_PARAMETER(FVector4, HeightmapUVScaleBias)
-SHADER_PARAMETER(FVector4, WeightmapUVScaleBias)
-SHADER_PARAMETER(FVector4, LandscapeLightmapScaleBias)
-SHADER_PARAMETER(FVector4, SubsectionSizeVertsLayerUVPan)
-SHADER_PARAMETER(FVector4, SubsectionOffsetParams)
-SHADER_PARAMETER(FVector4, LightmapSubsectionOffsetParams)
-SHADER_PARAMETER(FVector4, BlendableLayerMask)
-SHADER_PARAMETER(FMatrix, LocalToWorldNoScaling)
-SHADER_PARAMETER_TEXTURE(Texture2D, HeightmapTexture)
-SHADER_PARAMETER_SAMPLER(SamplerState, HeightmapTextureSampler)
-SHADER_PARAMETER_TEXTURE(Texture2D, NormalmapTexture)
-SHADER_PARAMETER_SAMPLER(SamplerState, NormalmapTextureSampler)
-//SHADER_PARAMETER_TEXTURE(Texture2D, XYOffsetmapTexture)
-//SHADER_PARAMETER_SAMPLER(SamplerState, XYOffsetmapTextureSampler)
-END_GLOBAL_SHADER_PARAMETER_STRUCT()
+class FLandscapeComponentSceneProxyInstanceMobile;
+
+struct FLandscapeClusterBatchElementParams
+{
+	FLandscapeClusterBatchElementParams(
+		const TUniformBuffer<FLandscapeComponentClusterUniformBuffer>* InLandscapeComponentClusterUniformBuffer,
+		const FLandscapeComponentSceneProxyInstanceMobile* InSceneProxy,
+		const uint32 InCurLOD)
+		: LandscapeComponentClusterUniformBuffer(InLandscapeComponentClusterUniformBuffer)
+		, SceneProxy(InSceneProxy)
+		, CurLOD(InCurLOD)
+	{
+
+	}
+
+	const TUniformBuffer<FLandscapeComponentClusterUniformBuffer>* LandscapeComponentClusterUniformBuffer;
+	const FLandscapeComponentSceneProxyInstanceMobile* SceneProxy; //#TODO: Cache RenderSystem?
+	const uint32 CurLOD;
+};
 
 
-BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeClusterLODUniformBuffer, )
-SHADER_PARAMETER(FIntPoint, Min)
-SHADER_PARAMETER(FIntPoint, Size)
-SHADER_PARAMETER_SRV(Buffer<float>, ClusterLOD) //#TODO: 每帧变化，也提取出来？
-END_GLOBAL_SHADER_PARAMETER_STRUCT()
-
-
-//每个Cluster顶点数据结构,不再需要SubX和SubY
+//Per ClusterVertexData
 struct FLandscapeClusterVertex
 {
 	float PositionX;
@@ -287,9 +286,12 @@ public:
 	virtual void OnTransformChanged() override;
 
 	TUniformBuffer<FLandscapeComponentClusterUniformBuffer> ComponentClusterUniformBuffer;
+
+	//固定LOD等级0,先不考虑其他LOD等级
 	FReadBuffer ComponentClusterBaseBuffer_GPU;
 	TArray<FComponentCluster> ComponentClustersBaseAndBound_CPU;	//Box为Struct类型, 无法构建AOS结构
-	//TArray<FIntPoint> ComponentClusterBase;
-	//TArray<FBox> ComponentClusterBounds;
+	TArray<FLandscapeClusterBatchElementParams> ComponentBatchUserData;
+
+	friend class FLandscapeInstanceVertexFactoryVSParameters;
 };
 //@StarLight code - END LandScapeInstance, Added by yanjianhong--------------------------------------------------------------

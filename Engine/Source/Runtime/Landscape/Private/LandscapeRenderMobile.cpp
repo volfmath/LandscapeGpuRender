@@ -590,8 +590,86 @@ FLODMask FLandscapeComponentSceneProxyMobile::GetCustomLOD(const FSceneView& InV
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeComponentClusterUniformBuffer, "ComponentClusterBuffer");
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeClusterLODUniformBuffer, "GlobalClusterBuffer");
 
-IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FLandscapeInstanceVertexFactoryMobile, SF_Vertex, FLandscapeVertexFactoryMobileVertexShaderParameters);
-IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FLandscapeInstanceVertexFactoryMobile, SF_Pixel, FLandscapeVertexFactoryMobilePixelShaderParameters);
+
+class FLandscapeInstanceVertexFactoryVSParameters : public FVertexFactoryShaderParameters
+{
+	DECLARE_INLINE_TYPE_LAYOUT(FLandscapeInstanceVertexFactoryVSParameters, NonVirtual);
+public:
+	/**
+	* Bind shader constants by name
+	* @param	ParameterMap - mapping of named shader constants to indices
+	*/
+	void Bind(const FShaderParameterMap& ParameterMap)
+	{
+		TexCoordOffsetParameter.Bind(ParameterMap, TEXT("TexCoordOffset"));
+		ComponentClusterBaseBuffer.Bind(ParameterMap, TEXT("ComponentClusterBaseBuffer"));
+		ClusterLODBuffer.Bind(ParameterMap, TEXT("ClusterLODBuffer"));
+	}
+
+	void GetElementShaderBindings(
+		const class FSceneInterface* Scene,
+		const FSceneView* InView,
+		const class FMeshMaterialShader* Shader,
+		const EVertexInputStreamType InputStreamType,
+		ERHIFeatureLevel::Type FeatureLevel,
+		const FVertexFactory* VertexFactory,
+		const FMeshBatchElement& BatchElement,
+		class FMeshDrawSingleShaderBindings& ShaderBindings,
+		FVertexInputStreamArray& VertexStreams
+	) const
+	{
+		SCOPE_CYCLE_COUNTER(STAT_LandscapeVFDrawTimeVS);
+
+		//检查有地方用到?
+		check(!TexCoordOffsetParameter.IsBound());
+
+		const FLandscapeClusterBatchElementParams* BatchElementParams = (const FLandscapeClusterBatchElementParams*)BatchElement.UserData;
+		check(BatchElementParams);
+
+		const FLandscapeComponentSceneProxyInstanceMobile* SceneProxy = BatchElementParams->SceneProxy;
+		FLandscapeRenderSystem* RenderSystem = LandscapeRenderSystems.FindChecked(SceneProxy->LandscapeKey);
+
+		//UniformBuffer都是MutilFrame Resource
+		ShaderBindings.Add(Shader->GetUniformBufferParameter<FLandscapeComponentClusterUniformBuffer>(), *BatchElementParams->LandscapeComponentClusterUniformBuffer);
+		ShaderBindings.Add(Shader->GetUniformBufferParameter<FLandscapeClusterLODUniformBuffer>(), RenderSystem->UniformBuffer);
+
+		ShaderBindings.Add(ComponentClusterBaseBuffer, SceneProxy->ComponentClusterBaseBuffer_GPU.SRV);
+		ShaderBindings.Add(ClusterLODBuffer, RenderSystem->ClusterLODValues_GPU.SRV);
+	}
+
+protected:
+	LAYOUT_FIELD(FShaderParameter, TexCoordOffsetParameter);
+	LAYOUT_FIELD(FShaderResourceParameter, ComponentClusterBaseBuffer)
+	LAYOUT_FIELD(FShaderResourceParameter, ClusterLODBuffer)
+};
+
+class FLandscapeInstanceVertexFactoryPSParameters : public FVertexFactoryShaderParameters
+{
+	DECLARE_INLINE_TYPE_LAYOUT(FLandscapeInstanceVertexFactoryPSParameters, NonVirtual);
+public:
+	void GetElementShaderBindings(
+		const class FSceneInterface* Scene,
+		const FSceneView* InView,
+		const class FMeshMaterialShader* Shader,
+		const EVertexInputStreamType InputStreamType,
+		ERHIFeatureLevel::Type FeatureLevel,
+		const FVertexFactory* VertexFactory,
+		const FMeshBatchElement& BatchElement,
+		class FMeshDrawSingleShaderBindings& ShaderBindings,
+		FVertexInputStreamArray& VertexStreams
+	) const
+	{
+		SCOPE_CYCLE_COUNTER(STAT_LandscapeVFDrawTimePS);
+
+		const FLandscapeClusterBatchElementParams* BatchElementParams = (const FLandscapeClusterBatchElementParams*)BatchElement.UserData;
+
+		ShaderBindings.Add(Shader->GetUniformBufferParameter<FLandscapeComponentClusterUniformBuffer>(), *BatchElementParams->LandscapeComponentClusterUniformBuffer);
+	}
+};
+
+
+IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FLandscapeInstanceVertexFactoryMobile, SF_Vertex, FLandscapeInstanceVertexFactoryVSParameters);
+IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FLandscapeInstanceVertexFactoryMobile, SF_Pixel, FLandscapeInstanceVertexFactoryPSParameters);
 IMPLEMENT_VERTEX_FACTORY_TYPE(FLandscapeInstanceVertexFactoryMobile, "/Engine/Private/LandscapeVertexFactory.ush", true, true, true, false, false);
 
 
@@ -620,19 +698,14 @@ void FLandscapeClusterVertexBuffer::InitRHI() {
 FLandscapeComponentSceneProxyInstanceMobile::FLandscapeComponentSceneProxyInstanceMobile(ULandscapeComponent* InComponent)
 	: FLandscapeComponentSceneProxy(InComponent)
 {
-	check(ComponentSizeQuads + NumSubsections == 256);
-	uint32 ComponentClusterSize = (ComponentSizeQuads + NumSubsections) / FLandscapeClusterVertexBuffer::ClusterQuadSize;
-	ComponentClustersBaseAndBound_CPU.Empty(ComponentClusterSize * ComponentClusterSize);
-	//当前Component仅仅知道二维坐标，但无法计算全局LinearIndex
-	FIntPoint ClusterComponentBase = ComponentBase * ComponentClusterSize;
+	check(InComponent);
 
-	for (uint32 y = 0; y < ComponentClusterSize; ++y) {
-		for (uint32 x = 0; x < ComponentClusterSize; ++x) {
-			FIntPoint ClusterBase = FIntPoint(ClusterComponentBase.X + x, ClusterComponentBase.Y + y);
-			//#TODO: Bound划分
-			ComponentClustersBaseAndBound_CPU.Emplace(ClusterBase, FBox());
-		}
-	}
+	check(InComponent->MobileMaterialInterfaces.Num() > 0);
+	check(InComponent->MobileWeightmapTextures.Num() > 0);
+//
+	WeightmapTextures = InComponent->MobileWeightmapTextures;
+//	NormalmapTexture = InComponent->MobileWeightmapTextures[0]; //use heightmap
+
 }
 
 FLandscapeComponentSceneProxyInstanceMobile::~FLandscapeComponentSceneProxyInstanceMobile() {
@@ -658,16 +731,13 @@ void FLandscapeComponentSceneProxyInstanceMobile::CreateRenderThreadResources() 
 	auto FeatureLevel = GetScene().GetFeatureLevel();
 
 	//使用同样的VertexBuffer和IndexBuffer, 不再是每个SceneProxy单独一份，其中让SharedBuffer创建ClusterIndexBuffer和ClusterVertexBuffer
+	//Initial VertexFactory, VertexBuffer has been created in sharedBuffers
 	SharedBuffers = FLandscapeComponentSceneProxy::SharedBuffersMap.FindRef(SharedBuffersKey);
 	if (SharedBuffers == nullptr) {
 		//don't need SOC data
 		SharedBuffers = new FLandscapeSharedBuffers(SharedBuffersKey, SubsectionSizeQuads, NumSubsections, FeatureLevel, false, /*NumOcclusionVertices*/0);
 		FLandscapeComponentSceneProxy::SharedBuffersMap.Add(SharedBuffersKey, SharedBuffers);
-	}
-	SharedBuffers->AddRef();
 
-	//Initial VertexFactory, VertexBuffer has been created in sharedBuffers
-	{
 		check(SharedBuffers->ClusterVertexBuffer);
 		FLandscapeInstanceVertexFactoryMobile* LandscapeVertexFactory = new FLandscapeInstanceVertexFactoryMobile(FeatureLevel);
 		LandscapeVertexFactory->MobileData.PositionComponent = FVertexStreamComponent(SharedBuffers->ClusterVertexBuffer, 0, sizeof(FLandscapeClusterVertex), VET_Float2);
@@ -676,52 +746,42 @@ void FLandscapeComponentSceneProxyInstanceMobile::CreateRenderThreadResources() 
 		//不初始化SceneProxy中的VertexFactory, 资源生命周期均由SharedBuffers管理
 		SharedBuffers->ClusterVertexFactory = LandscapeVertexFactory;
 	}
+	SharedBuffers->AddRef();
 
-	//Initial UniformBuffer and ComponentClusterBase etc....
+
+	//初始化UniformBuffer和BatchParameter
 	{
 		ComponentClusterUniformBuffer.InitResource(); //Content和GPUBuffer在内部是分开的(兼容Descript?)
+		for (uint32 Lod = 0; Lod < SharedBuffers->NumClusterLOD; ++Lod) {
+			ComponentBatchUserData.Emplace(this, &ComponentClusterUniformBuffer, Lod);
+		}
+	}
+
+
+	//初始化ClusterBaseCPUBuffer,ClusterBaseGPUBuffer
+	{
+		check(ComponentSizeQuads + NumSubsections == 256);
+		uint32 ComponentClusterSize = (ComponentSizeQuads + NumSubsections) / FLandscapeClusterVertexBuffer::ClusterQuadSize;
+		ComponentClustersBaseAndBound_CPU.Empty(ComponentClusterSize * ComponentClusterSize);
+		//当前Component仅仅知道二维坐标，但无法计算全局LinearIndex
+		FIntPoint ClusterComponentBase = ComponentBase * ComponentClusterSize;
+
+		for (uint32 y = 0; y < ComponentClusterSize; ++y) {
+			for (uint32 x = 0; x < ComponentClusterSize; ++x) {
+				FIntPoint ClusterBase = FIntPoint(ClusterComponentBase.X + x, ClusterComponentBase.Y + y);
+				//#TODO: Bound划分
+				ComponentClustersBaseAndBound_CPU.Emplace(ClusterBase, FBox());
+			}
+		}
 		//#TODO: Use PF_R16G16_UINT or PF_R8_UINT
 		ComponentClusterBaseBuffer_GPU.Initialize(8, ComponentClustersBaseAndBound_CPU.Num(), PF_R32G32_UINT, BUF_Dynamic);
 	}
 
-
-	////暂时不支持VT
-	//if (UseVirtualTexturing(FeatureLevel))
-	//{
-	//	FLandscapeFixedGridVertexFactoryMobile* LandscapeVertexFactory = new FLandscapeFixedGridVertexFactoryMobile(FeatureLevel);
-	//	LandscapeVertexFactory->MobileData.PositionComponent = FVertexStreamComponent(MobileRenderData->VertexBuffer, STRUCT_OFFSET(FLandscapeMobileVertex, Position), sizeof(FLandscapeMobileVertex), VET_UByte4N);
-
-	//	for (uint32 Index = 0; Index < LANDSCAPE_MAX_ES_LOD_COMP; ++Index)
-	//	{
-	//		LandscapeVertexFactory->MobileData.LODHeightsComponent.Add
-	//		(FVertexStreamComponent(MobileRenderData->VertexBuffer, STRUCT_OFFSET(FLandscapeMobileVertex, LODHeights) + sizeof(uint8) * 4 * Index, sizeof(FLandscapeMobileVertex), VET_UByte4N));
-	//	}
-
-	//	LandscapeVertexFactory->InitResource();
-	//	FixedGridVertexFactory = LandscapeVertexFactory;
-	//}
-
-		// Create per Lod uniform buffers
-	//LandscapeFixedGridUniformShaderParameters.AddDefaulted(MaxLOD + 1);
-	//for (int32 LodIndex = 0; LodIndex <= MaxLOD; ++LodIndex)
-	//{
-	//	LandscapeFixedGridUniformShaderParameters[LodIndex].InitResource();
-	//	FLandscapeFixedGridUniformShaderParameters Parameters;
-	//	Parameters.LodValues = FVector4(
-	//		LodIndex,
-	//		0.f,
-	//		(float)((SubsectionSizeVerts >> LodIndex) - 1),
-	//		1.f / (float)((SubsectionSizeVerts >> LodIndex) - 1));
-	//	LandscapeFixedGridUniformShaderParameters[LodIndex].SetContents(Parameters);
-	//}
 }
 
 void FLandscapeComponentSceneProxyInstanceMobile::GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const{
 
 	QUICK_SCOPE_CYCLE_COUNTER(STAT_FLandscapeComponentSceneProxyInstance_GetMeshElements);
-
-	FLandscapeElementParamArray& ParameterArray = Collector.AllocateOneFrameResource<FLandscapeElementParamArray>();
-	ParameterArray.ElementParams.AddDefaulted(1);
 
 	check(Views.Num() == 1);
 	const FSceneView* View = Views[0];
@@ -743,6 +803,8 @@ void FLandscapeComponentSceneProxyInstanceMobile::GetDynamicMeshElements(const T
 	}
 
 	{
+		check(bRegistered);
+
 		MeshBatch.VertexFactory = SharedBuffers->ClusterVertexFactory;
 		MeshBatch.MaterialRenderProxy = MaterialInterface->GetRenderProxy();
 
@@ -760,13 +822,7 @@ void FLandscapeComponentSceneProxyInstanceMobile::GetDynamicMeshElements(const T
 		// Combined batch element
 		FMeshBatchElement& BatchElement = MeshBatch.Elements[0];
 
-		FLandscapeBatchElementParams* BatchElementParams = new(ParameterArray.ElementParams) FLandscapeBatchElementParams;
-		BatchElementParams->LandscapeUniformShaderParametersResource = &LandscapeUniformShaderParameters;
-		BatchElementParams->SceneProxy = this;
-		BatchElementParams->CurrentLOD = LODIndex;
-
-
-		BatchElement.UserData = BatchElementParams;
+		BatchElement.UserData = &ComponentBatchUserData[LODIndex];
 		BatchElement.PrimitiveUniformBuffer = GetUniformBuffer();
 		BatchElement.IndexBuffer = SharedBuffers->ClusterIndexBuffers[LODIndex];
 		BatchElement.NumPrimitives = CurClusterQuadSize * CurClusterQuadSize * 2u;
@@ -782,14 +838,17 @@ void FLandscapeComponentSceneProxyInstanceMobile::GetDynamicMeshElements(const T
 	MeshBatch.bCanApplyViewModeOverrides = true; //兼容WireFrame等
 	MeshBatch.bUseWireframeSelectionColoring = IsSelected(); //选中颜色
 	Collector.AddMesh(0, MeshBatch);
+
+	//临时在此更新GPUBuffer,假定Instance数据暂时只有1个
+	{
+		FIntPoint TestBase = FIntPoint::ZeroValue;
+		void* Data = RHILockVertexBuffer(ComponentClusterBaseBuffer_GPU.Buffer, 0, sizeof(FIntPoint) * 1, RLM_WriteOnly);
+		FMemory::Memcpy(Data, &TestBase, sizeof(FIntPoint) * 1);
+		RHIUnlockVertexBuffer(ComponentClusterBaseBuffer_GPU.Buffer);
+	}
 }
 
 void FLandscapeComponentSceneProxyInstanceMobile::OnTransformChanged() {
-
-	//创建GPU ClusterBaseBuffer
-	//#TODO: PF_R16G16_UINT or PF_R8_UINT
-	check(ComponentClusterBaseBuffer_GPU.Buffer == nullptr && ComponentClusterBaseBuffer_GPU.SRV == nullptr);
-	ComponentClusterBaseBuffer_GPU.Initialize(sizeof(uint32) * 2, ComponentClustersBaseAndBound_CPU.Num(), PF_R32G32_UINT, BUF_Dynamic);
 
 	// Set Lightmap ScaleBias
 	int32 PatchExpandCountX = 0;
