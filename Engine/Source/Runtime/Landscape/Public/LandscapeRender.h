@@ -151,6 +151,7 @@ END_GLOBAL_SHADER_PARAMETER_STRUCT()
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeClusterLODUniformBuffer, )
 SHADER_PARAMETER(FIntPoint, Min)
 SHADER_PARAMETER(FIntPoint, Size)
+SHADER_PARAMETER(uint32, PerComponentClusterSize)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 //@StarLight code - END LandScapeInstance, Added by yanjianhong
 

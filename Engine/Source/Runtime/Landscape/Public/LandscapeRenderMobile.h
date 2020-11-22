@@ -131,7 +131,7 @@ public:
 	//@StarLight code - BEGIN Optimize terrain LOD, Added by zhuyule
 	virtual bool IsUsingCustomLODRules() const;
 
-	virtual struct FLODMask GetCustomLOD(const FSceneView& InView, float InViewLODScale, int32 InForcedLODLevel, float& OutScreenSizeSquared) const;
+	//virtual struct FLODMask GetCustomLOD(const FSceneView& InView, float InViewLODScale, int32 InForcedLODLevel, float& OutScreenSizeSquared) const;
 	//@StarLight code - END Optimize terrain LOD, Added by zhuyule
 };
 
@@ -215,6 +215,7 @@ public:
 	{
 		FVertexFactory::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 		OutEnvironment.SetDefine(TEXT("NUM_VF_PACKED_INTERPOLANTS"), TEXT("1"));
+		OutEnvironment.SetDefine(TEXT("USE_MOBILE_INSTANCE"), TEXT("1"));
 	}
 
 	// FRenderResource interface.
@@ -274,6 +275,7 @@ private:
 
 		FIntPoint ClusterBase; 
 		FBox ClusterBound;
+		//#TODO:æ·»åŠ é¡¶ç‚¹xyæœ€å¤§å¤§å°
 	};
 
 
@@ -285,11 +287,13 @@ public:
 	virtual void CreateRenderThreadResources() override;
 	virtual void OnTransformChanged() override;
 
+	virtual void DrawStaticElements(FStaticPrimitiveDrawInterface* PDI) override;
+
 	TUniformBuffer<FLandscapeComponentClusterUniformBuffer> ComponentClusterUniformBuffer;
 
-	//¹Ì¶¨LODµÈ¼¶0,ÏÈ²»¿¼ÂÇÆäËûLODµÈ¼¶
+	//å›ºå®šLODç­‰çº§0,å…ˆä¸è€ƒè™‘å…¶ä»–LODç­‰çº§
 	FReadBuffer ComponentClusterBaseBuffer_GPU;
-	TArray<FComponentCluster> ComponentClustersBaseAndBound_CPU;	//BoxÎªStructÀàĞÍ, ÎŞ·¨¹¹½¨AOS½á¹¹
+	TArray<FComponentCluster> ComponentClustersBaseAndBound_CPU;	//Boxä¸ºStructç±»å‹, æ— æ³•æ„å»ºAOSç»“æ„
 	TArray<FLandscapeClusterBatchElementParams> ComponentBatchUserData;
 
 	friend class FLandscapeInstanceVertexFactoryVSParameters;

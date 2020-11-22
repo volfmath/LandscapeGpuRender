@@ -406,7 +406,7 @@ void ULandscapeComponent::Serialize(FArchive& Ar)
 		TArray<UTexture2D*> BackupWeightmapTextures;
 
 		//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-		//#TODO: 序列化Heightmap
+		//#TODO: 搴忓垪鍖朒eightmap
 		Exchange(HeightmapTexture, BackupHeightmapTexture);
 		//@StarLight code - END LandScapeInstance, Added by yanjianhong
 
@@ -417,7 +417,7 @@ void ULandscapeComponent::Serialize(FArchive& Ar)
 		Super::Serialize(Ar);
 
 		//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-		//#TODO: 序列化Heightmap
+		//#TODO: 搴忓垪鍖朒eightmap
 		Exchange(HeightmapTexture, BackupHeightmapTexture);
 		//@StarLight code - END LandScapeInstance, Added by yanjianhong
 
@@ -1409,7 +1409,8 @@ FPrimitiveSceneProxy* ULandscapeComponent::CreateSceneProxy()
 	else // i.e. (FeatureLevel <= ERHIFeatureLevel::ES3_1)
 	{
 		//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-		if (false) {
+		extern TAutoConsoleVariable<int32> CVarMobileAllowLandScapeInstance;
+		if (CVarMobileAllowLandScapeInstance.GetValueOnAnyThread() != 0) {
 			Proxy = new FLandscapeComponentSceneProxyInstanceMobile(this);
 		}
 		else if (PlatformData.HasValidRuntimeData())

@@ -90,11 +90,11 @@ static FAutoConsoleVariableRef CVarAllowLandscapeShadows(
 
 
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-static TAutoConsoleVariable<int32> CVarMobileAllowLandScapeInstance(
+TAutoConsoleVariable<int32> CVarMobileAllowLandScapeInstance(
 	TEXT("r.Mobile.LandScapeInstance"),
-	0,
+	1,
 	TEXT("Whether to allow gpuinstance on CPU for mobile landscape.\n"),
-	ECVF_RenderThreadSafe
+	ECVF_Scalability
 );
 //@StarLight code - End LandScapeInstance, Added by yanjianhong
 
@@ -952,11 +952,11 @@ void FLandscapeRenderSystem::ComputeSectionPerViewParameters(
 		float MeshScreenSizeSquared = 0;
 
 		//@StarLight code - BEGIN Optimize terrain LOD, Added by zhuyule
-		if (SceneProxies[EntityIndex] != nullptr && SceneProxies[EntityIndex]->IsUsingCustomLODRules())
-		{
-			MeshScreenSizeSquared = ComputeBoundsScreenSquared(SceneProxies[EntityIndex]->GetBounds(), ViewOrigin, ViewProjectionMarix, RealViewProjectionMatrix);
-		}
-		else
+		//if (SceneProxies[EntityIndex] != nullptr && SceneProxies[EntityIndex]->IsUsingCustomLODRules())
+		//{
+		//	MeshScreenSizeSquared = ComputeBoundsScreenSquared(SceneProxies[EntityIndex]->GetBounds(), ViewOrigin, ViewProjectionMarix, RealViewProjectionMatrix);
+		//}
+		//else
 		//@StarLight code - END Optimize terrain LOD, Added by zhuyule
 		{
 			MeshScreenSizeSquared = ComputeBoundsScreenRadiusSquared(FVector(SectionOriginAndRadius[EntityIndex]), SectionOriginAndRadius[EntityIndex].W, ViewOrigin, ViewProjectionMarix);
@@ -1028,24 +1028,25 @@ void FLandscapeRenderSystem::RecreateClusterBuffers() {
 
 	//Relloc GPU and CPU Buffer
 	{
-		uint32 NumCluster = Size.X * Size.Y * PerComponentClusterSize;
+		uint32 NumCluster = Size.X * Size.Y * PerComponentClusterSize * PerComponentClusterSize;
 		ClusterLODValues_GPU.Release();
 		//#TODO: PF_R16F
 		ClusterLODValues_GPU.Initialize(sizeof(float), NumCluster, PF_R32_FLOAT, BUF_Dynamic);
-		//#TODO: ¶àÏß³ÌĞ´ÈëÖµ
+		//#TODO: å¤šçº¿ç¨‹å†™å…¥å€¼
 		ClusterLODValues_CPU.Empty(NumCluster);
+		ClusterLODValues_CPU.AddZeroed(NumCluster);
 
-
-		//#TODO: Ã¿Ö¡¼ÆËã¸üĞÂ,ÒòÎªºóÃæÃ¿¸öComponetnÄÚ²¿ClusterLod¼ÆËã¶¼ÊÇÒì²½µÄ,ËùÒÔ×îºÃÃ¿¸öComponent¶¼´¦ÓÚÒ»¶ÎÁ¬ĞøµÄÄÚ´æ
-		//Èç¹ûÃ¿Ö¡¸üĞÂµÄÊÇÁÚ½Ó4¸öClusterµÄInfo,ÄÇÃ´ÓÖ»á±ä³ÉÃ¿¸öComponentÓĞÒ»¸öBuffer,Ó²¼ş²»Ì«ÓÑºÃ,ÒòÎªºÜ´ó¿ÉÄÜÎÒÁ¬LOD¶¼»áºÏ³ÉÒ»¸öBuffer,²»¿ÉÄÜÔÙ¿ª4±¶´æ´¢
+		//#TODO: æ¯å¸§è®¡ç®—æ›´æ–°,å› ä¸ºåé¢æ¯ä¸ªComponetnå†…éƒ¨ClusterLodè®¡ç®—éƒ½æ˜¯å¼‚æ­¥çš„,æ‰€ä»¥æœ€å¥½æ¯ä¸ªComponentéƒ½å¤„äºä¸€æ®µè¿ç»­çš„å†…å­˜
+		//å¦‚æœæ¯å¸§æ›´æ–°çš„æ˜¯é‚»æ¥4ä¸ªClusterçš„Info,é‚£ä¹ˆåˆä¼šå˜æˆæ¯ä¸ªComponentæœ‰ä¸€ä¸ªBuffer,ç¡¬ä»¶ä¸å¤ªå‹å¥½,å› ä¸ºå¾ˆå¤§å¯èƒ½æˆ‘è¿LODéƒ½ä¼šåˆæˆä¸€ä¸ªBuffer,ä¸å¯èƒ½å†å¼€4å€å­˜å‚¨
 		FMemory::Memset(ClusterLODValues_CPU.GetData(), 0, ClusterLODValues_CPU.Num() * sizeof(float));
 	}
 
-	//UpdateUniformBuffer, ÒòÎªGPUBufferÃ¿Ö¡»á¸üĞÂ,µ«UniformBuffer²»»á
+	//UpdateUniformBuffer, å› ä¸ºGPUBufferæ¯å¸§ä¼šæ›´æ–°,ä½†UniformBufferä¸ä¼š
 	{
 		FLandscapeClusterLODUniformBuffer Parameters;
 		Parameters.Size = Size * PerComponentClusterSize;
 		Parameters.Min = Min * PerComponentClusterSize;
+		Parameters.PerComponentClusterSize = PerComponentClusterSize;
 
 		check(Min.X == 0 && Min.Y == 0);
 
@@ -1363,7 +1364,7 @@ FLandscapeComponentSceneProxy::FLandscapeComponentSceneProxy(ULandscapeComponent
 	SetLevelColor(FLinearColor(1.f, 1.f, 1.f));
 
 	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-	//#TODO: ´¦Àí¸ß¶ÈÍ¼
+	//#TODO: å¤„ç†é«˜åº¦å›¾
 	if (FeatureLevel <= ERHIFeatureLevel::ES3_1)	
 	{
 		HeightmapTexture = nullptr;
@@ -1932,7 +1933,8 @@ FPrimitiveViewRelevance FLandscapeComponentSceneProxy::GetViewRelevance(const FS
 #endif
 		!IsStaticPathAvailable() || 
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-	    (FeatureLevel == ERHIFeatureLevel::ES3_1) && CVarMobileAllowLandScapeInstance.GetValueOnRenderThread() != 0
+	    /*(FeatureLevel == ERHIFeatureLevel::ES3_1) && CVarMobileAllowLandScapeInstance.GetValueOnRenderThread() != 0*/
+		true
 //@StarLight code - END LandScapeInstance, Added by yanjianhong
 		)
 	{
@@ -3981,7 +3983,7 @@ void FLandscapeSharedBuffers::CreateGrassIndexBuffer()
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
 template<typename IndexType>
 void FLandscapeSharedBuffers::CreateClusterIndexBuffers() {
-	//ComponentµÄLODµÈ¼¶ÒÑ¾­ÎŞÓÃ,×î´óLOD QuadÎª1
+	//Componentçš„LODç­‰çº§å·²ç»æ— ç”¨,æœ€å¤§LOD Quadä¸º1
 	for (uint32 CurLod = 0; CurLod < NumClusterLOD; CurLod++) {
 		TArray<IndexType> NewIndices;
 		uint16 LodClusterQuadSize = FLandscapeClusterVertexBuffer::ClusterQuadSize >> CurLod;
@@ -4042,7 +4044,7 @@ FLandscapeSharedBuffers::FLandscapeSharedBuffers(const int32 InSharedBuffersKey,
 
 	if (bUseInstanceLandscape) {
 		ClusterVertexBuffer = new FLandscapeClusterVertexBuffer();
-		//ÍË»¯µ½QuadÎª1
+		//é€€åŒ–åˆ°Quadä¸º1
 		check(ClusterIndexBuffers.Num() == 0);
 		ClusterIndexBuffers.AddZeroed(NumClusterLOD);
 		CreateClusterIndexBuffers<uint16>();
@@ -4097,7 +4099,7 @@ FLandscapeSharedBuffers::~FLandscapeSharedBuffers()
 {
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
 	if (bUseInstanceLandscape) {
-		for (int32 i = 0; i < NumIndexBuffers; i++) {
+		for (uint32 i = 0; i < NumClusterLOD; i++) {
 			ClusterIndexBuffers[i]->ReleaseResource();
 			delete ClusterIndexBuffers[i];
 		}
@@ -4647,13 +4649,13 @@ public:
 				static const FName LandscapeVertexFactoryMobile = FName(TEXT("FLandscapeVertexFactoryMobile"));
 
 				//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-				static const FName LandscapeComponentSceneProxyInstanceMobile = FName(TEXT("FLandscapeComponentSceneProxyInstanceMobile"));
+				static const FName LandscapeInstanceVertexFactoryMobile = FName(TEXT("FLandscapeInstanceVertexFactoryMobile"));
 				//@StarLight code - END LandScapeInstance, Added by yanjianhong
 
 				if (VertexFactoryType->GetFName() == LandscapeVertexFactory ||
 					VertexFactoryType->GetFName() == LandscapeXYOffsetVertexFactory ||
 					VertexFactoryType->GetFName() == LandscapeVertexFactoryMobile ||
-					VertexFactoryType->GetFName() == LandscapeComponentSceneProxyInstanceMobile)
+					VertexFactoryType->GetFName() == LandscapeInstanceVertexFactoryMobile)
 				{
 					return !bIsRuntimeVirtualTextureShaderType && FMaterialResource::ShouldCache(Platform, ShaderType, VertexFactoryType);
 				}

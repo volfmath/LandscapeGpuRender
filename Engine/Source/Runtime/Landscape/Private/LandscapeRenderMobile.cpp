@@ -548,47 +548,47 @@ bool FLandscapeComponentSceneProxyMobile::IsUsingCustomLODRules() const
 	return GLandscapeOptimizeLOD > 0; 
 }
 
-FLODMask FLandscapeComponentSceneProxyMobile::GetCustomLOD(const FSceneView& InView, float InViewLODScale, int32 InForcedLODLevel, float& OutScreenSizeSquared) const
-{
-	FLODMask LODToRender;
-	const FSceneView& LODView = GetLODView(InView);
-
-	const int32 NumMeshes = GetPrimitiveSceneInfo()->StaticMeshRelevances.Num();
-
-	int32 MinLODFound = INT_MAX;
-	bool bFoundLOD = false;
-	OutScreenSizeSquared = ComputeBoundsScreenSquared(GetBounds(), InView.ViewMatrices.GetViewOrigin(), LODView);
-
-	for (int32 MeshIndex = NumMeshes - 1; MeshIndex >= 0; --MeshIndex)
-	{
-		const FStaticMeshBatchRelevance& Mesh = GetPrimitiveSceneInfo()->StaticMeshRelevances[MeshIndex];
-
-		float MeshScreenSize = Mesh.ScreenSize;
-
-		if (FMath::Square(MeshScreenSize * 0.5f) >= OutScreenSizeSquared)
-		{
-			LODToRender.SetLOD(Mesh.LODIndex);
-			bFoundLOD = true;
-			break;
-		}
-
-		MinLODFound = FMath::Min<int32>(MinLODFound, Mesh.LODIndex);
-	}
-	// If no LOD was found matching the screen size, use the lowest in the array instead of LOD 0, to handle non-zero MinLOD
-	if (!bFoundLOD)
-	{
-		LODToRender.SetLOD(MinLODFound);
-	}
-
-	return LODToRender;
-}
+//FLODMask FLandscapeComponentSceneProxyMobile::GetCustomLOD(const FSceneView& InView, float InViewLODScale, int32 InForcedLODLevel, float& OutScreenSizeSquared) const
+//{
+//	FLODMask LODToRender;
+//	//const FSceneView& LODView = GetLODView(InView);
+//
+//	//const int32 NumMeshes = GetPrimitiveSceneInfo()->StaticMeshRelevances.Num();
+//
+//	//int32 MinLODFound = INT_MAX;
+//	//bool bFoundLOD = false;
+//	//OutScreenSizeSquared = ComputeBoundsScreenSquared(GetBounds(), InView.ViewMatrices.GetViewOrigin(), LODView);
+//
+//	//for (int32 MeshIndex = NumMeshes - 1; MeshIndex >= 0; --MeshIndex)
+//	//{
+//	//	const FStaticMeshBatchRelevance& Mesh = GetPrimitiveSceneInfo()->StaticMeshRelevances[MeshIndex];
+//
+//	//	float MeshScreenSize = Mesh.ScreenSize;
+//
+//	//	if (FMath::Square(MeshScreenSize * 0.5f) >= OutScreenSizeSquared)
+//	//	{
+//	//		LODToRender.SetLOD(Mesh.LODIndex);
+//	//		bFoundLOD = true;
+//	//		break;
+//	//	}
+//
+//	//	MinLODFound = FMath::Min<int32>(MinLODFound, Mesh.LODIndex);
+//	//}
+//	//// If no LOD was found matching the screen size, use the lowest in the array instead of LOD 0, to handle non-zero MinLOD
+//	//if (!bFoundLOD)
+//	//{
+//	//	LODToRender.SetLOD(MinLODFound);
+//	//}
+//
+//	return LODToRender;
+//}
 //@StarLight code - END Optimize terrain LOD, Added by zhuyule
 
 
 
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong----------------------------------------------------
-IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeComponentClusterUniformBuffer, "ComponentClusterBuffer");
-IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeClusterLODUniformBuffer, "GlobalClusterBuffer");
+IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeComponentClusterUniformBuffer, "ComponentClusterParameters");
+IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeClusterLODUniformBuffer, "GlobalClusterParameters");
 
 
 class FLandscapeInstanceVertexFactoryVSParameters : public FVertexFactoryShaderParameters
@@ -620,7 +620,7 @@ public:
 	{
 		SCOPE_CYCLE_COUNTER(STAT_LandscapeVFDrawTimeVS);
 
-		//¼ì²éÓĞµØ·½ÓÃµ½?
+		//æ£€æŸ¥æœ‰åœ°æ–¹ç”¨åˆ°?
 		check(!TexCoordOffsetParameter.IsBound());
 
 		const FLandscapeClusterBatchElementParams* BatchElementParams = (const FLandscapeClusterBatchElementParams*)BatchElement.UserData;
@@ -629,9 +629,9 @@ public:
 		const FLandscapeComponentSceneProxyInstanceMobile* SceneProxy = BatchElementParams->SceneProxy;
 		FLandscapeRenderSystem* RenderSystem = LandscapeRenderSystems.FindChecked(SceneProxy->LandscapeKey);
 
-		//UniformBuffer¶¼ÊÇMutilFrame Resource
+		//UniformBufferéƒ½æ˜¯MutilFrame Resource
 		ShaderBindings.Add(Shader->GetUniformBufferParameter<FLandscapeComponentClusterUniformBuffer>(), *BatchElementParams->LandscapeComponentClusterUniformBuffer);
-		ShaderBindings.Add(Shader->GetUniformBufferParameter<FLandscapeClusterLODUniformBuffer>(), RenderSystem->UniformBuffer);
+		ShaderBindings.Add(Shader->GetUniformBufferParameter<FLandscapeClusterLODUniformBuffer>(), RenderSystem->ClusterLodUniformBuffer);
 
 		ShaderBindings.Add(ComponentClusterBaseBuffer, SceneProxy->ComponentClusterBaseBuffer_GPU.SRV);
 		ShaderBindings.Add(ClusterLODBuffer, RenderSystem->ClusterLODValues_GPU.SRV);
@@ -704,7 +704,9 @@ FLandscapeComponentSceneProxyInstanceMobile::FLandscapeComponentSceneProxyInstan
 	check(InComponent->MobileWeightmapTextures.Num() > 0);
 //
 	WeightmapTextures = InComponent->MobileWeightmapTextures;
-//	NormalmapTexture = InComponent->MobileWeightmapTextures[0]; //use heightmap
+
+	//#TODO: æš‚æ—¶ä½¿ç”¨WeightMap, å¾…æ›¿æ¢ä¸ºHeightMap
+	NormalmapTexture = InComponent->MobileWeightmapTextures[0];
 
 }
 
@@ -724,13 +726,13 @@ void FLandscapeComponentSceneProxyInstanceMobile::CreateRenderThreadResources() 
 	LLM_SCOPE(ELLMTag::Landscape); 
 
 	if (IsComponentLevelVisible()){
-		//#TODO: ´ó²¿·ÖÄÚÈİ²»ÔÙĞèÒª
+		//#TODO: å¤§éƒ¨åˆ†å†…å®¹ä¸å†éœ€è¦
 		RegisterNeighbors(this); 
 	}
 
 	auto FeatureLevel = GetScene().GetFeatureLevel();
 
-	//Ê¹ÓÃÍ¬ÑùµÄVertexBufferºÍIndexBuffer, ²»ÔÙÊÇÃ¿¸öSceneProxyµ¥¶ÀÒ»·İ£¬ÆäÖĞÈÃSharedBuffer´´½¨ClusterIndexBufferºÍClusterVertexBuffer
+	//ä½¿ç”¨åŒæ ·çš„VertexBufferå’ŒIndexBuffer, ä¸å†æ˜¯æ¯ä¸ªSceneProxyå•ç‹¬ä¸€ä»½ï¼Œå…¶ä¸­è®©SharedBufferåˆ›å»ºClusterIndexBufferå’ŒClusterVertexBuffer
 	//Initial VertexFactory, VertexBuffer has been created in sharedBuffers
 	SharedBuffers = FLandscapeComponentSceneProxy::SharedBuffersMap.FindRef(SharedBuffersKey);
 	if (SharedBuffers == nullptr) {
@@ -743,36 +745,42 @@ void FLandscapeComponentSceneProxyInstanceMobile::CreateRenderThreadResources() 
 		LandscapeVertexFactory->MobileData.PositionComponent = FVertexStreamComponent(SharedBuffers->ClusterVertexBuffer, 0, sizeof(FLandscapeClusterVertex), VET_Float2);
 		LandscapeVertexFactory->InitResource();
 
-		//²»³õÊ¼»¯SceneProxyÖĞµÄVertexFactory, ×ÊÔ´ÉúÃüÖÜÆÚ¾ùÓÉSharedBuffers¹ÜÀí
+		//ä¸åˆå§‹åŒ–SceneProxyä¸­çš„VertexFactory, èµ„æºç”Ÿå‘½å‘¨æœŸå‡ç”±SharedBuffersç®¡ç†
 		SharedBuffers->ClusterVertexFactory = LandscapeVertexFactory;
 	}
 	SharedBuffers->AddRef();
 
 
-	//³õÊ¼»¯UniformBufferºÍBatchParameter
+	//åˆå§‹åŒ–UniformBufferå’ŒBatchParameter
 	{
-		ComponentClusterUniformBuffer.InitResource(); //ContentºÍGPUBufferÔÚÄÚ²¿ÊÇ·Ö¿ªµÄ(¼æÈİDescript?)
+		ComponentClusterUniformBuffer.InitResource(); //Contentå’ŒGPUBufferåœ¨å†…éƒ¨æ˜¯åˆ†å¼€çš„(å…¼å®¹Descript?)
 		for (uint32 Lod = 0; Lod < SharedBuffers->NumClusterLOD; ++Lod) {
-			ComponentBatchUserData.Emplace(this, &ComponentClusterUniformBuffer, Lod);
+			ComponentBatchUserData.Emplace(&ComponentClusterUniformBuffer, this, Lod);
 		}
 	}
 
 
-	//³õÊ¼»¯ClusterBaseCPUBuffer,ClusterBaseGPUBuffer
+	//åˆå§‹åŒ–ClusterBaseCPUBuffer, ClusterBaseGPUBuffer
 	{
 		check(ComponentSizeQuads + NumSubsections == 256);
 		uint32 ComponentClusterSize = (ComponentSizeQuads + NumSubsections) / FLandscapeClusterVertexBuffer::ClusterQuadSize;
 		ComponentClustersBaseAndBound_CPU.Empty(ComponentClusterSize * ComponentClusterSize);
-		//µ±Ç°Component½ö½öÖªµÀ¶şÎ¬×ø±ê£¬µ«ÎŞ·¨¼ÆËãÈ«¾ÖLinearIndex
+		//å½“å‰Componentä»…ä»…çŸ¥é“äºŒç»´åæ ‡ï¼Œä½†æ— æ³•è®¡ç®—å…¨å±€LinearIndex
 		FIntPoint ClusterComponentBase = ComponentBase * ComponentClusterSize;
 
 		for (uint32 y = 0; y < ComponentClusterSize; ++y) {
 			for (uint32 x = 0; x < ComponentClusterSize; ++x) {
 				FIntPoint ClusterBase = FIntPoint(ClusterComponentBase.X + x, ClusterComponentBase.Y + y);
-				//#TODO: Bound»®·Ö
+				//#TODO: Boundåˆ’åˆ†
+				//#TODO:æ·»åŠ é¡¶ç‚¹xyæœ€å¤§å¤§å°
 				ComponentClustersBaseAndBound_CPU.Emplace(ClusterBase, FBox());
 			}
 		}
+
+		//Debug Only
+		FLandscapeRenderSystem* RenderSystem = LandscapeRenderSystems.FindChecked(LandscapeKey);
+		check(RenderSystem->PerComponentClusterSize * RenderSystem->PerComponentClusterSize == ComponentClustersBaseAndBound_CPU.Num());
+
 		//#TODO: Use PF_R16G16_UINT or PF_R8_UINT
 		ComponentClusterBaseBuffer_GPU.Initialize(8, ComponentClustersBaseAndBound_CPU.Num(), PF_R32G32_UINT, BUF_Dynamic);
 	}
@@ -787,7 +795,7 @@ void FLandscapeComponentSceneProxyInstanceMobile::GetDynamicMeshElements(const T
 	const FSceneView* View = Views[0];
 	FMeshBatch& MeshBatch = Collector.AllocateMesh();
 
-	uint32 LODIndex = 0; //#TODO: ¼ÆËãLOD
+	uint32 LODIndex = 0; //#TODO: è®¡ç®—LOD
 	uint32 CurClusterQuadSize = FLandscapeClusterVertexBuffer::ClusterQuadSize >> LODIndex;
 	uint32 CurClusterVertexSize = CurClusterQuadSize + 1;
 /*	NumTriangles += Mesh.GetNumPrimitives();
@@ -796,7 +804,7 @@ void FLandscapeComponentSceneProxyInstanceMobile::GetDynamicMeshElements(const T
 	UMaterialInterface* MaterialInterface = nullptr;
 
 	{
-		//#TODO: Ê¹ÓÃLOD²ÄÖÊ?
+		//#TODO: ä½¿ç”¨LODæè´¨?
 		int32 MaterialIndex = LODIndexToMaterialIndex[LODIndex];
 		MaterialInterface = AvailableMaterials[MaterialIndex];
 		check(MaterialInterface != nullptr);
@@ -831,15 +839,15 @@ void FLandscapeComponentSceneProxyInstanceMobile::GetDynamicMeshElements(const T
 		BatchElement.MaxVertexIndex = CurClusterVertexSize * CurClusterVertexSize - 1;
 		BatchElement.NumInstances = 1;
 
-		//²»ĞèÒª¿¼ÂÇHole
+		//ä¸éœ€è¦è€ƒè™‘Hole
 		//ApplyMeshElementModifier(BatchElement, LODIndex);
 	}
 
-	MeshBatch.bCanApplyViewModeOverrides = true; //¼æÈİWireFrameµÈ
-	MeshBatch.bUseWireframeSelectionColoring = IsSelected(); //Ñ¡ÖĞÑÕÉ«
+	MeshBatch.bCanApplyViewModeOverrides = true; //å…¼å®¹WireFrameç­‰
+	MeshBatch.bUseWireframeSelectionColoring = IsSelected(); //é€‰ä¸­é¢œè‰²
 	Collector.AddMesh(0, MeshBatch);
 
-	//ÁÙÊ±ÔÚ´Ë¸üĞÂGPUBuffer,¼Ù¶¨InstanceÊı¾İÔİÊ±Ö»ÓĞ1¸ö
+	//ä¸´æ—¶åœ¨æ­¤æ›´æ–°GPUBuffer,å‡å®šInstanceæ•°æ®æš‚æ—¶åªæœ‰1ä¸ª
 	{
 		FIntPoint TestBase = FIntPoint::ZeroValue;
 		void* Data = RHILockVertexBuffer(ComponentClusterBaseBuffer_GPU.Buffer, 0, sizeof(FIntPoint) * 1, RLM_WriteOnly);
@@ -847,6 +855,39 @@ void FLandscapeComponentSceneProxyInstanceMobile::GetDynamicMeshElements(const T
 		RHIUnlockVertexBuffer(ComponentClusterBaseBuffer_GPU.Buffer);
 	}
 }
+
+void FLandscapeComponentSceneProxyInstanceMobile::DrawStaticElements(FStaticPrimitiveDrawInterface* PDI) 
+{
+	if (AvailableMaterials.Num() == 0)
+	{
+		return;
+	}
+
+	//æš‚æ—¶ä¸æ”¯æŒVT
+	check(RuntimeVirtualTextureMaterialTypes.Num() == 0);
+
+	int32 TotalBatchCount = 1 + LastLOD - FirstLOD;
+	TotalBatchCount += (1 + LastVirtualTextureLOD - FirstVirtualTextureLOD) * RuntimeVirtualTextureMaterialTypes.Num();
+
+	StaticBatchParamArray.Empty(TotalBatchCount);
+	PDI->ReserveMemoryForMeshes(TotalBatchCount);
+
+	// Add fixed grid mesh batches for runtime virtual texture usage
+	for (ERuntimeVirtualTextureMaterialType MaterialType : RuntimeVirtualTextureMaterialTypes)
+	{
+		const int32 MaterialIndex = LODIndexToMaterialIndex[FirstLOD];
+
+		for (int32 LODIndex = FirstVirtualTextureLOD; LODIndex <= LastVirtualTextureLOD; ++LODIndex)
+		{
+			FMeshBatch RuntimeVirtualTextureMeshBatch;
+			if (GetMeshElementForVirtualTexture(LODIndex, MaterialType, AvailableMaterials[MaterialIndex], RuntimeVirtualTextureMeshBatch, StaticBatchParamArray))
+			{
+				PDI->DrawMesh(RuntimeVirtualTextureMeshBatch, FLT_MAX);
+			}
+		}
+	}
+}
+
 
 void FLandscapeComponentSceneProxyInstanceMobile::OnTransformChanged() {
 
@@ -872,7 +913,7 @@ void FLandscapeComponentSceneProxyInstanceMobile::OnTransformChanged() {
 	LocalToWorldNoScaling = LtoW;
 	LocalToWorldNoScaling.RemoveScaling();
 
-	// Set FLandscapeUniformVSParameters for this subsection
+	// Set FLandscapeUniformVSParameters for this Component
 	FLandscapeComponentClusterUniformBuffer LandscapeClusterParams;
 
 	LandscapeClusterParams.HeightmapUVScaleBias = HeightmapScaleBias;
@@ -939,7 +980,7 @@ void FLandscapeComponentSceneProxyInstanceMobile::OnTransformChanged() {
 
 	ComponentClusterUniformBuffer.SetContents(LandscapeClusterParams);
 
-	//½ö³õÊ¼»¯Ê±´´½¨,²»¿ÉÄÜ±»×¢²á
+	//ä»…åˆå§‹åŒ–æ—¶åˆ›å»º,ä¸å¯èƒ½è¢«æ³¨å†Œ
 	check(!bRegistered);
 }
 
