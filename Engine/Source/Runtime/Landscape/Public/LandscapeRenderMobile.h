@@ -267,16 +267,22 @@ public:
 
 class FLandscapeComponentSceneProxyInstanceMobile : public FLandscapeComponentSceneProxy {
 private:
-	struct FComponentCluster {
-		FComponentCluster(const FIntPoint& InClusterBase, const FBox& InClusterBound)
-			: ClusterBase(InClusterBase)
-			, ClusterBound(InClusterBound)
-		{}
+	//struct FComponentCluster {
 
-		FIntPoint ClusterBase; 
-		FBox ClusterBound;
-		//#TODO:添加顶点xy最大大小
-	};
+
+	//};
+
+
+	//struct FComponentCluster {
+	//	FComponentCluster(const FIntPoint& InClusterBase, const FBox& InClusterBound)
+	//		: ClusterBase(InClusterBase)
+	//		, ClusterBound(InClusterBound)
+	//	{}
+
+	//	FIntPoint ClusterBase; 
+	//	FBox ClusterBound;
+	//	//#TODO:添加顶点xy最大大小
+	//};
 
 
 public:
@@ -286,15 +292,23 @@ public:
 	virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const override;
 	virtual void CreateRenderThreadResources() override;
 	virtual void OnTransformChanged() override;
-
 	virtual void DrawStaticElements(FStaticPrimitiveDrawInterface* PDI) override;
 
+private:
+	FBox CalcClusterBounds(uint32 ClusterBaseX, uint32 ClusterBaseY);
+
+
+	//Debug Function
+	void RenderOnlyBox(FPrimitiveDrawInterface* PDI, const FBoxSphereBounds& InBounds) const;
+
+public:
 	TUniformBuffer<FLandscapeComponentClusterUniformBuffer> ComponentClusterUniformBuffer;
 
 	//固定LOD等级0,先不考虑其他LOD等级
 	FReadBuffer ComponentClusterBaseBuffer_GPU;
-	TArray<FComponentCluster> ComponentClustersBaseAndBound_CPU;	//Box为Struct类型, 无法构建AOS结构
-	TArray<FLandscapeClusterBatchElementParams> ComponentBatchUserData;
+	TArray<FIntPoint> ClusterBases_CPU;
+	TArray<FBox> ClusterBounds_CPU;
+	TArray<FLandscapeClusterBatchElementParams> ComponentBatchUserData; //每级LOD独享一份
 
 	friend class FLandscapeInstanceVertexFactoryVSParameters;
 };

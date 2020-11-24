@@ -1364,10 +1364,11 @@ FLandscapeComponentSceneProxy::FLandscapeComponentSceneProxy(ULandscapeComponent
 	SetLevelColor(FLinearColor(1.f, 1.f, 1.f));
 
 	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-	//#TODO: 处理高度图
 	if (FeatureLevel <= ERHIFeatureLevel::ES3_1)	
 	{
-		HeightmapTexture = nullptr;
+		if (CVarMobileAllowLandScapeInstance.GetValueOnAnyThread() == 0) {
+			HeightmapTexture = nullptr;
+		}
 		HeightmapSubsectionOffsetU = 0;
 		HeightmapSubsectionOffsetV = 0;
 	}
@@ -1933,8 +1934,7 @@ FPrimitiveViewRelevance FLandscapeComponentSceneProxy::GetViewRelevance(const FS
 #endif
 		!IsStaticPathAvailable() || 
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-	    /*(FeatureLevel == ERHIFeatureLevel::ES3_1) && CVarMobileAllowLandScapeInstance.GetValueOnRenderThread() != 0*/
-		true
+	    (FeatureLevel == ERHIFeatureLevel::ES3_1) && CVarMobileAllowLandScapeInstance.GetValueOnRenderThread() != 0
 //@StarLight code - END LandScapeInstance, Added by yanjianhong
 		)
 	{
@@ -3987,15 +3987,16 @@ void FLandscapeSharedBuffers::CreateClusterIndexBuffers() {
 	for (uint32 CurLod = 0; CurLod < NumClusterLOD; CurLod++) {
 		TArray<IndexType> NewIndices;
 		uint16 LodClusterQuadSize = FLandscapeClusterVertexBuffer::ClusterQuadSize >> CurLod;
+		uint16 LodClusterVertSize = LodClusterQuadSize + 1;
 		uint32 ExpectedNumIndices = LodClusterQuadSize * LodClusterQuadSize * 6;
 		NewIndices.Empty(ExpectedNumIndices);
 
 		for (uint32 y = 0; y < LodClusterQuadSize; ++y) {
 			for (uint32 x = 0; x < LodClusterQuadSize; ++x) {
-				IndexType i00 = y * LodClusterQuadSize + x;
-				IndexType i10 = y * LodClusterQuadSize + x + 1;
-				IndexType i11 = (y + 1) * LodClusterQuadSize + x + 1;
-				IndexType i01 = (y + 1) * LodClusterQuadSize + x;
+				IndexType i00 = y * LodClusterVertSize + x;
+				IndexType i10 = y * LodClusterVertSize + x + 1;
+				IndexType i11 = (y + 1) * LodClusterVertSize + x + 1;
+				IndexType i01 = (y + 1) * LodClusterVertSize + x;
 
 				NewIndices.Add(i00);
 				NewIndices.Add(i11);

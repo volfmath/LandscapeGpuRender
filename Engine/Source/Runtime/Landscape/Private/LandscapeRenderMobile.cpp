@@ -17,6 +17,7 @@ LandscapeRenderMobile.cpp: Landscape Rendering without using vertex texture fetc
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
 #include "ProfilingDebugging/LoadTimeTracker.h"
 #include "LandscapeLight.h"
+#include "LandscapeDataAccess.h"
 //@StarLight code - END LandScapeInstance, Added by yanjianhong
 
 // Debug CVar for disabling the loading of landscape hole meshes
@@ -624,7 +625,6 @@ public:
 		check(!TexCoordOffsetParameter.IsBound());
 
 		const FLandscapeClusterBatchElementParams* BatchElementParams = (const FLandscapeClusterBatchElementParams*)BatchElement.UserData;
-		check(BatchElementParams);
 
 		const FLandscapeComponentSceneProxyInstanceMobile* SceneProxy = BatchElementParams->SceneProxy;
 		FLandscapeRenderSystem* RenderSystem = LandscapeRenderSystems.FindChecked(SceneProxy->LandscapeKey);
@@ -722,6 +722,8 @@ SIZE_T FLandscapeComponentSceneProxyInstanceMobile::GetTypeHash() const {
 
 void FLandscapeComponentSceneProxyInstanceMobile::CreateRenderThreadResources() {
 
+	check(HeightmapTexture != nullptr);
+
 	//memory tracker
 	LLM_SCOPE(ELLMTag::Landscape); 
 
@@ -733,7 +735,7 @@ void FLandscapeComponentSceneProxyInstanceMobile::CreateRenderThreadResources() 
 	auto FeatureLevel = GetScene().GetFeatureLevel();
 
 	//使用同样的VertexBuffer和IndexBuffer, 不再是每个SceneProxy单独一份，其中让SharedBuffer创建ClusterIndexBuffer和ClusterVertexBuffer
-	//Initial VertexFactory, VertexBuffer has been created in sharedBuffers
+	//Initial VertexFactory, ClusterVertexBuffer and ClusterIndexBuffer has been created in sharedBuffers
 	SharedBuffers = FLandscapeComponentSceneProxy::SharedBuffersMap.FindRef(SharedBuffersKey);
 	if (SharedBuffers == nullptr) {
 		//don't need SOC data
@@ -754,6 +756,7 @@ void FLandscapeComponentSceneProxyInstanceMobile::CreateRenderThreadResources() 
 	//初始化UniformBuffer和BatchParameter
 	{
 		ComponentClusterUniformBuffer.InitResource(); //Content和GPUBuffer在内部是分开的(兼容Descript?)
+		ComponentBatchUserData.Empty(SharedBuffers->NumClusterLOD);
 		for (uint32 Lod = 0; Lod < SharedBuffers->NumClusterLOD; ++Lod) {
 			ComponentBatchUserData.Emplace(&ComponentClusterUniformBuffer, this, Lod);
 		}
@@ -762,34 +765,61 @@ void FLandscapeComponentSceneProxyInstanceMobile::CreateRenderThreadResources() 
 
 	//初始化ClusterBaseCPUBuffer, ClusterBaseGPUBuffer
 	{
-		check(ComponentSizeQuads + NumSubsections == 256);
+		uint32 IdleStart = FPlatformTime::Cycles();
+
+		check(ComponentSizeQuads + NumSubsections == 512);
+		check(ComponentSizeQuads + NumSubsections >= FLandscapeClusterVertexBuffer::ClusterQuadSize);
+
 		uint32 ComponentClusterSize = (ComponentSizeQuads + NumSubsections) / FLandscapeClusterVertexBuffer::ClusterQuadSize;
-		ComponentClustersBaseAndBound_CPU.Empty(ComponentClusterSize * ComponentClusterSize);
+		ClusterBases_CPU.Empty(ComponentClusterSize * ComponentClusterSize);
+		ClusterBounds_CPU.Empty(ComponentClusterSize * ComponentClusterSize);
 		//当前Component仅仅知道二维坐标，但无法计算全局LinearIndex
 		FIntPoint ClusterComponentBase = ComponentBase * ComponentClusterSize;
 
 		for (uint32 y = 0; y < ComponentClusterSize; ++y) {
 			for (uint32 x = 0; x < ComponentClusterSize; ++x) {
-				FIntPoint ClusterBase = FIntPoint(ClusterComponentBase.X + x, ClusterComponentBase.Y + y);
-				//#TODO: Bound划分
+				ClusterBounds_CPU.Emplace(CalcClusterBounds(ClusterComponentBase.X + x, ClusterComponentBase.Y + y));
+
 				//#TODO:添加顶点xy最大大小
-				ComponentClustersBaseAndBound_CPU.Emplace(ClusterBase, FBox());
+				ClusterBases_CPU.Emplace(ClusterComponentBase.X + x, ClusterComponentBase.Y + y);
 			}
 		}
 
 		//Debug Only
 		FLandscapeRenderSystem* RenderSystem = LandscapeRenderSystems.FindChecked(LandscapeKey);
-		check(RenderSystem->PerComponentClusterSize * RenderSystem->PerComponentClusterSize == ComponentClustersBaseAndBound_CPU.Num());
+		check(RenderSystem->PerComponentClusterSize * RenderSystem->PerComponentClusterSize == ClusterBases_CPU.Num());
 
 		//#TODO: Use PF_R16G16_UINT or PF_R8_UINT
-		ComponentClusterBaseBuffer_GPU.Initialize(8, ComponentClustersBaseAndBound_CPU.Num(), PF_R32G32_UINT, BUF_Dynamic);
+		ComponentClusterBaseBuffer_GPU.Initialize(8, ClusterBases_CPU.Num(), PF_R32G32_UINT, BUF_Dynamic);
+
+
+		UE_LOG(LogTemp, Log, TEXT("Initial ClusterBase And Bounds: %u"), FPlatformTime::ToMilliseconds(FPlatformTime::Cycles() - IdleStart));
 	}
 
 }
 
+
+TArray<FBox> Test;
 void FLandscapeComponentSceneProxyInstanceMobile::GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const{
 
-	QUICK_SCOPE_CYCLE_COUNTER(STAT_FLandscapeComponentSceneProxyInstance_GetMeshElements);
+	{
+		SCOPE_CYCLE_COUNTER(STAT_LandscapeClusterInitialBaseAndBounds);
+		uint32 ComponentClusterSize = (ComponentSizeQuads + NumSubsections) / FLandscapeClusterVertexBuffer::ClusterQuadSize;
+		Test.Empty(ComponentClusterSize * ComponentClusterSize);
+		//当前Component仅仅知道二维坐标，但无法计算全局LinearIndex
+		FIntPoint ClusterComponentBase = ComponentBase * ComponentClusterSize;
+
+		for (uint32 y = 0; y < ComponentClusterSize; ++y) {
+			for (uint32 x = 0; x < ComponentClusterSize; ++x) {
+				Test.Emplace(CalcClusterBounds(ClusterComponentBase.X + x, ClusterComponentBase.Y + y));
+			}
+		}
+	}
+
+
+
+	//QUICK_SCOPE_CYCLE_COUNTER(STAT_FLandscapeComponentSceneProxyInstance_GetMeshElements);
+	SCOPE_CYCLE_COUNTER(STAT_LandscapeDynamicDrawTime);
 
 	check(Views.Num() == 1);
 	const FSceneView* View = Views[0];
@@ -820,7 +850,7 @@ void FLandscapeComponentSceneProxyInstanceMobile::GetDynamicMeshElements(const T
 		MeshBatch.ReverseCulling = IsLocalToWorldDeterminantNegative();
 		MeshBatch.CastShadow = true;
 		MeshBatch.bUseForDepthPass = true;
-		MeshBatch.bUseAsOccluder = ShouldUseAsOccluder() && GetScene().GetShadingPath() == EShadingPath::Deferred && !IsMovable();
+		MeshBatch.bUseAsOccluder = false; //
 		MeshBatch.bUseForMaterial = true;
 		MeshBatch.Type = PT_TriangleList;
 		MeshBatch.DepthPriorityGroup = SDPG_World;
@@ -837,7 +867,7 @@ void FLandscapeComponentSceneProxyInstanceMobile::GetDynamicMeshElements(const T
 		BatchElement.FirstIndex = 0;
 		BatchElement.MinVertexIndex = 0;
 		BatchElement.MaxVertexIndex = CurClusterVertexSize * CurClusterVertexSize - 1;
-		BatchElement.NumInstances = 1;
+		BatchElement.NumInstances = ClusterBases_CPU.Num();
 
 		//不需要考虑Hole
 		//ApplyMeshElementModifier(BatchElement, LODIndex);
@@ -847,12 +877,19 @@ void FLandscapeComponentSceneProxyInstanceMobile::GetDynamicMeshElements(const T
 	MeshBatch.bUseWireframeSelectionColoring = IsSelected(); //选中颜色
 	Collector.AddMesh(0, MeshBatch);
 
-	//临时在此更新GPUBuffer,假定Instance数据暂时只有1个
+	//#TODO: 
 	{
-		FIntPoint TestBase = FIntPoint::ZeroValue;
-		void* Data = RHILockVertexBuffer(ComponentClusterBaseBuffer_GPU.Buffer, 0, sizeof(FIntPoint) * 1, RLM_WriteOnly);
-		FMemory::Memcpy(Data, &TestBase, sizeof(FIntPoint) * 1);
+		void* Data = RHILockVertexBuffer(ComponentClusterBaseBuffer_GPU.Buffer, 0, sizeof(FIntPoint) * ClusterBases_CPU.Num(), RLM_WriteOnly);
+		FMemory::Memcpy(Data, ClusterBases_CPU.GetData(), sizeof(FIntPoint) * ClusterBases_CPU.Num());
 		RHIUnlockVertexBuffer(ComponentClusterBaseBuffer_GPU.Buffer);
+	}
+
+
+	if (ViewFamily.EngineShowFlags.Bounds)
+	{	
+		for (const auto& CurBound : ClusterBounds_CPU) {
+			RenderOnlyBox(Collector.GetPDI(0), CurBound);
+		}	
 	}
 }
 
@@ -954,16 +991,10 @@ void FLandscapeComponentSceneProxyInstanceMobile::OnTransformChanged() {
 		0
 	);
 
-	if (HeightmapTexture)
-	{
-		LandscapeClusterParams.HeightmapTexture = HeightmapTexture->TextureReference.TextureReferenceRHI;
-		LandscapeClusterParams.HeightmapTextureSampler = TStaticSamplerState<SF_Point>::GetRHI();
-	}
-	else
-	{
-		LandscapeClusterParams.HeightmapTexture = GBlackTexture->TextureRHI;
-		LandscapeClusterParams.HeightmapTextureSampler = GBlackTexture->SamplerStateRHI;
-	}
+
+	LandscapeClusterParams.HeightmapTexture = HeightmapTexture->TextureReference.TextureReferenceRHI;
+	LandscapeClusterParams.HeightmapTextureSampler = TStaticSamplerState<SF_Point>::GetRHI();
+
 
 	check(XYOffsetmapTexture == nullptr);
 
@@ -982,9 +1013,65 @@ void FLandscapeComponentSceneProxyInstanceMobile::OnTransformChanged() {
 
 	//仅初始化时创建,不可能被注册
 	check(!bRegistered);
+
+	//使用Dynamic渲染, 不用更新PrimitivesNeedingStaticMeshUpdate容器, 即不会重新CacheDrawCommand
+	// Recache mesh draw commands for changed uniform buffers
+	//GetScene().UpdateCachedRenderStates(this);
 }
 
 
+FBox FLandscapeComponentSceneProxyInstanceMobile::CalcClusterBounds(uint32 ClusterBaseX, uint32 ClusterBaseY) {
+	
+	FBox LocalBox(ForceInit);
+
+	uint32 HeightmapSizeX = HeightmapTexture->Source.GetSizeX();
+	uint32 HeightmapSizeY = HeightmapTexture->Source.GetSizeY();
+	check(HeightmapSizeX == HeightmapSizeY);
+
+	//一张高度图对应一个Component
+	check(HeightmapScaleBias.Z == 0.f && HeightmapScaleBias.W == 0.f);
+
+	//因为按2的幂数划Cluster, 必然有顶点超出, 每个Cluster的起始顶点都是重合的
+	//Section接缝处的Cluster, 采样高度图要进行偏移，Section处相邻的Height值相同
+	uint32 StartX = ClusterBaseX * FLandscapeClusterVertexBuffer::ClusterQuadSize;
+	uint32 EndX = FMath::Min(StartX + FLandscapeClusterVertexBuffer::ClusterQuadSize, static_cast<uint32>(ComponentSizeQuads));
+	check(HeightmapSizeX > EndX);
+
+
+	uint32 StartY = ClusterBaseY * FLandscapeClusterVertexBuffer::ClusterQuadSize;
+	uint32 EndY = FMath::Min(StartY + FLandscapeClusterVertexBuffer::ClusterQuadSize, static_cast<uint32>(ComponentSizeQuads));
+	check(HeightmapSizeY > EndY);
+	
+	FColor* HeightMapData = reinterpret_cast<FColor*>(HeightmapTexture->Source.LockMip(0));
+
+	//第SubsectionSizeVerts + 1个顶点,采样要偏移
+	for (uint32 y = StartY; y <= EndY; ++y) {
+		uint32 SampleTexelY = SubsectionSizeVerts  == y ? y + 1 : y;
+
+		for (uint32 x = StartX; x <= EndX; ++x) {			
+			uint32 SampleTexelX = SubsectionSizeVerts  == x ? x + 1 : x;		
+			uint32 HeightMapIndex = HeightmapSizeX * SampleTexelY + SampleTexelX;
+			
+			const auto& HeightValue = HeightMapData[HeightMapIndex];
+
+			float VertexHeight = LandscapeDataAccess::GetLocalHeight(static_cast<uint16>(HeightValue.R << 8u | HeightValue.G));
+			const FVector LocalVertex(x, y, VertexHeight);
+			LocalBox += LocalVertex;
+		}
+	}
+	HeightmapTexture->Source.UnlockMip(0);
+	auto WorldBox = LocalBox.TransformBy(GetLocalToWorld());
+	return WorldBox;
+}
+
+void FLandscapeComponentSceneProxyInstanceMobile::RenderOnlyBox(FPrimitiveDrawInterface* PDI, const FBoxSphereBounds& InBounds) const{
+	// Draw the static mesh's bounding box and sphere.
+	const ESceneDepthPriorityGroup DrawBoundsDPG = SDPG_World;
+	DrawWireBox(PDI, InBounds.GetBox(), FColor(72, 72, 255), DrawBoundsDPG);
+	/*DrawCircle(PDI, InBounds.Origin, FVector(1, 0, 0), FVector(0, 1, 0), FColor::Yellow, InBounds.SphereRadius, 32, DrawBoundsDPG);
+	DrawCircle(PDI, InBounds.Origin, FVector(1, 0, 0), FVector(0, 0, 1), FColor::Yellow, InBounds.SphereRadius, 32, DrawBoundsDPG);
+	DrawCircle(PDI, InBounds.Origin, FVector(0, 1, 0), FVector(0, 0, 1), FColor::Yellow, InBounds.SphereRadius, 32, DrawBoundsDPG);*/
+}
 
 bool FLandscapeInstanceVertexFactoryMobile::ShouldCompilePermutation(const FVertexFactoryShaderPermutationParameters& Parameters)
 {

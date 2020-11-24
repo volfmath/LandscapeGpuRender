@@ -803,13 +803,11 @@ FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput In
 #endif
 
 #if USE_MOBILE_INSTANCE
-	//#TODO:  可化简为直接使用
-	float2 CoordTranslate = float2(64.f * InvLODScaleFactor, max(32.f * InvLODScaleFactor, 1.f)) * 64.f;
-	float2 InputPositionLODAdjusted = ActualLODCoordsInt / CoordTranslate.x;
-
-	// InputPositionNextLOD : Position for next LOD in base LOD units
-	float2 NextLODCoordsInt = floor(ActualLODCoordsInt * 0.5);
-	float2 InputPositionNextLOD = NextLODCoordsInt / CoordTranslate.y;
+	//#TODO:  因为Cluster的优势天生为2的幂数,不用求顶点LOD,直接放大, 当坍塌到最后一级LOD时,MorphAlpha必为0
+	float2 InputPositionLODAdjusted = ActualLODCoordsInt / InvLODScaleFactor;
+	
+	float2 NextLODCoordsInt = floor(ActualLODCoordsInt * 0.5) * 2.f;
+	float2 InputPositionNextLOD = NextLODCoordsInt / InvLODScaleFactor;
 #else
 	// Base to Actual LOD, Base to Next LOD
 	float2 CoordTranslate = float2( LandscapeParameters.SubsectionSizeVertsLayerUVPan.x * InvLODScaleFactor - 1, max(LandscapeParameters.SubsectionSizeVertsLayerUVPan.x * 0.5f * InvLODScaleFactor, 2) - 1 ) * LandscapeParameters.SubsectionSizeVertsLayerUVPan.y;

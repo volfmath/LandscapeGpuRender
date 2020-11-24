@@ -100,6 +100,14 @@ DEFINE_STAT(STAT_LandscapeOccluderMem);
 DEFINE_STAT(STAT_LandscapeHoleMem);
 DEFINE_STAT(STAT_LandscapeComponentMem);
 
+
+//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
+DEFINE_STAT(STAT_LandscapeClusterInitialBaseAndBounds);
+DEFINE_STAT(STAT_LandscapeClusterFrustumCull);
+DEFINE_STAT(STAT_LandscapeClusterCalcLOD);
+extern TAutoConsoleVariable<int32> CVarMobileAllowLandScapeInstance;
+//@StarLight code - END LandScapeInstance, Added by yanjianhong
+
 #if ENABLE_COOK_STATS
 namespace LandscapeCookStats
 {
@@ -278,6 +286,8 @@ void ULandscapeComponent::CheckGenerateLandscapePlatformData(bool bIsCooking, co
 
 	bool bRegenerateVertexData = bMissingVertexData || bMissingPixelData || bHashMismatch;
 	
+	//#TODO: 不再Serialize VertexData, 使用高度图
+
 	if (bRegenerateVertexData)
 	{
 		if (bIsCooking)
@@ -406,8 +416,10 @@ void ULandscapeComponent::Serialize(FArchive& Ar)
 		TArray<UTexture2D*> BackupWeightmapTextures;
 
 		//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-		//#TODO: 序列化Heightmap
-		Exchange(HeightmapTexture, BackupHeightmapTexture);
+		//保存高度图
+		if (CVarMobileAllowLandScapeInstance.GetValueOnAnyThread() == 0) {
+			Exchange(HeightmapTexture, BackupHeightmapTexture);
+		}
 		//@StarLight code - END LandScapeInstance, Added by yanjianhong
 
 		Exchange(BackupXYOffsetmapTexture, XYOffsetmapTexture);
@@ -417,8 +429,9 @@ void ULandscapeComponent::Serialize(FArchive& Ar)
 		Super::Serialize(Ar);
 
 		//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-		//#TODO: 序列化Heightmap
-		Exchange(HeightmapTexture, BackupHeightmapTexture);
+		if (CVarMobileAllowLandScapeInstance.GetValueOnAnyThread() == 0) {
+			Exchange(HeightmapTexture, BackupHeightmapTexture);
+		}
 		//@StarLight code - END LandScapeInstance, Added by yanjianhong
 
 		Exchange(BackupXYOffsetmapTexture, XYOffsetmapTexture);
@@ -1409,7 +1422,6 @@ FPrimitiveSceneProxy* ULandscapeComponent::CreateSceneProxy()
 	else // i.e. (FeatureLevel <= ERHIFeatureLevel::ES3_1)
 	{
 		//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-		extern TAutoConsoleVariable<int32> CVarMobileAllowLandScapeInstance;
 		if (CVarMobileAllowLandScapeInstance.GetValueOnAnyThread() != 0) {
 			Proxy = new FLandscapeComponentSceneProxyInstanceMobile(this);
 		}
