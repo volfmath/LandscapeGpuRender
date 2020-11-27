@@ -715,6 +715,9 @@ void FLandscapeRenderSystem::RegisterEntity(FLandscapeComponentSceneProxy* Scene
 		FIntPoint OriginalMin = Min;
 		FIntPoint OriginalMax = Min + Size - FIntPoint(1, 1);
 		FIntPoint NewMin(FMath::Min(Min.X, SceneProxy->ComponentBase.X), FMath::Min(Min.Y, SceneProxy->ComponentBase.Y));
+		//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
+		check(Min.X == 0 && Min.Y == 0);
+		//@StarLight code - END LandScapeInstance, Added by yanjianhong
 		FIntPoint NewMax(FMath::Max(OriginalMax.X, SceneProxy->ComponentBase.X), FMath::Max(OriginalMax.Y, SceneProxy->ComponentBase.Y));
 
 		FIntPoint SizeRequired = (NewMax - NewMin) + FIntPoint(1, 1);
@@ -724,12 +727,7 @@ void FLandscapeRenderSystem::RegisterEntity(FLandscapeComponentSceneProxy* Scene
 			ResizeAndMoveTo(NewMin, SizeRequired);
 
 			//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-			if (bUseInstanceLandscape) {
-				uint32 CurComponentClusterSize = (SceneProxy->ComponentSizeQuads + SceneProxy->NumSubsections) / FLandscapeClusterVertexBuffer::ClusterQuadSize;
-				check(PerComponentClusterSize == CurComponentClusterSize);
-				RecreateClusterBuffers();
-			}
-			else {
+			if (!bUseInstanceLandscape) {
 				RecreateBuffers();
 			}
 			//@StarLight code - END LandScapeInstance, Added by yanjianhong
@@ -751,12 +749,11 @@ void FLandscapeRenderSystem::RegisterEntity(FLandscapeComponentSceneProxy* Scene
 		TessellationFalloffSettings.TessellationComponentSquaredScreenSize = SceneProxy->TessellationComponentSquaredScreenSize;
 		TessellationFalloffSettings.TessellationComponentScreenSizeFalloff = SceneProxy->TessellationComponentScreenSizeFalloff;
 
-		ResizeAndMoveTo(SceneProxy->ComponentBase, FIntPoint(1, 1));
 		//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-		if (bUseInstanceLandscape) {
-			RecreateClusterBuffers();
-		}
-		else {
+		ResizeAndMoveTo(SceneProxy->ComponentBase, FIntPoint(1, 1));
+
+		//#TODO: 新RenderSystem可忽略,当前开启bUseInstanceLandscape
+		if (!bUseInstanceLandscape) {
 			RecreateBuffers();
 		}
 		//@StarLight code - END LandScapeInstance, Added by yanjianhong
@@ -766,6 +763,17 @@ void FLandscapeRenderSystem::RegisterEntity(FLandscapeComponentSceneProxy* Scene
 	SetSectionLODSettings(SceneProxy->ComponentBase, SceneProxy->LODSettings);
 	SetSectionOriginAndRadius(SceneProxy->ComponentBase, FVector4(SceneProxy->GetBounds().Origin, SceneProxy->GetBounds().SphereRadius));
 	SetSceneProxy(SceneProxy->ComponentBase, SceneProxy);
+
+	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
+	//#TODO: NewRenderSystem
+	if (bUseInstanceLandscape) {
+		uint32 CurComponentClusterSize = (SceneProxy->ComponentSizeQuads + SceneProxy->NumSubsections) / FLandscapeClusterVertexBuffer::ClusterQuadSize;
+		check(PerComponentClusterSize == CurComponentClusterSize);
+
+		//多线程执行该函数?
+		InitialClusterBaseAndBound(SceneProxy);
+	}
+	//@StarLight code - END LandScapeInstance, Added by yanjianhong
 }
 
 void FLandscapeRenderSystem::UnregisterEntity(FLandscapeComponentSceneProxy* SceneProxy)
@@ -909,7 +917,7 @@ void FLandscapeRenderSystem::BeginRenderView(const FSceneView* View)
 	}
 
 	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-
+	//#TODO: Cache
 	if (bUseInstanceLandscape) {
 		UpdateCluterGPUBuffer();
 	}
@@ -1024,53 +1032,63 @@ void FLandscapeRenderSystem::FetchHeightmapLODBiases()
 
 
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-void FLandscapeRenderSystem::RecreateClusterBuffers() {
 
-	//Relloc GPU and CPU Buffer
-	{
-		uint32 NumCluster = Size.X * Size.Y * PerComponentClusterSize * PerComponentClusterSize;
-		ClusterLODValues_GPU.Release();
-		//#TODO: PF_R16F
-		ClusterLODValues_GPU.Initialize(sizeof(float), NumCluster, PF_R32_FLOAT, BUF_Dynamic);
-		//#TODO: 多线程写入值
-		ClusterLODValues_CPU.Empty(NumCluster);
-		ClusterLODValues_CPU.AddZeroed(NumCluster);
+void FLandscapeRenderSystem::InitialClusterBaseAndBound(FLandscapeComponentSceneProxy* SceneProxy) {
 
-		//#TODO: 每帧计算更新,因为后面每个Componetn内部ClusterLod计算都是异步的,所以最好每个Component都处于一段连续的内存
-		//如果每帧更新的是邻接4个Cluster的Info,那么又会变成每个Component有一个Buffer,硬件不太友好,因为很大可能我连LOD都会合成一个Buffer,不可能再开4倍存储
-		FMemory::Memset(ClusterLODValues_CPU.GetData(), 0, ClusterLODValues_CPU.Num() * sizeof(float));
-	}
+	auto InstanceProxy = static_cast<FLandscapeComponentSceneProxyInstanceMobile*>(SceneProxy);
+	for (uint32 ClusterOffsetY = 0; ClusterOffsetY < PerComponentClusterSize; ++ClusterOffsetY) {
+		for (uint32 ClusterOffsetX = 0; ClusterOffsetX < PerComponentClusterSize; ++ClusterOffsetX) {
 
-	//UpdateUniformBuffer, 因为GPUBuffer每帧会更新,但UniformBuffer不会
-	{
-		FLandscapeClusterLODUniformBuffer Parameters;
-		Parameters.Size = Size * PerComponentClusterSize;
-		Parameters.Min = Min * PerComponentClusterSize;
-		Parameters.PerComponentClusterSize = PerComponentClusterSize;
+			uint32 ClusterLinearIndex = GetClusterLinearIndex(SceneProxy->ComponentBase, FIntPoint(ClusterOffsetX, ClusterOffsetY));
+			FIntPoint ClusterBase = GetClusteGlobalBase(SceneProxy->ComponentBase, FIntPoint(ClusterOffsetX, ClusterOffsetY));
 
-		check(Min.X == 0 && Min.Y == 0);
-
-		if (ClusterLodUniformBuffer.IsValid())
-		{
-			ClusterLodUniformBuffer.UpdateUniformBufferImmediate(Parameters);
-		}
-		else
-		{
-			ClusterLodUniformBuffer = TUniformBufferRef<FLandscapeClusterLODUniformBuffer>::CreateUniformBufferImmediate(Parameters, UniformBuffer_MultiFrame);
+			//#TODO: 边界值
+			ClusterBaseData[ClusterLinearIndex] = FClusterInstanceData(ClusterBase, FIntPoint());
 		}
 	}
+}
+
+
+void FLandscapeRenderSystem::CreateClusterAllBuffers() {
+
+	uint32 NumCluster = ComponentTotalSize.X * ComponentTotalSize.Y * PerComponentClusterSize * PerComponentClusterSize;
+
+	ClusterBounds.AddZeroed(NumCluster);
+	ClusterBaseData.AddZeroed(NumCluster);
+
+	check(!ClusterInstanceData_GPU.Buffer.IsValid() && !ClusterInstanceData_GPU.SRV.IsValid());
+	ClusterInstanceData_GPU.Initialize(sizeof(FClusterInstanceData), NumCluster, PF_R8G8B8A8_UINT, BUF_Dynamic);
+	ClusterInstanceData_CPU.AddZeroed(NumCluster);
+
+	//#TODO: PF_R16F
+	ClusterLODValues_GPU.Initialize(sizeof(float), NumCluster, PF_R32_FLOAT, BUF_Dynamic);
+	ClusterLODValues_CPU.AddZeroed(NumCluster);
+
+
+	//FLandscapeClusterLODUniformBuffer Parameters;
+	//Parameters.Size = ComponentTotalSize * PerComponentClusterSize;
+	//Parameters.Min = FIntPoint::ZeroValue;
+	//Parameters.PerComponentClusterSize = PerComponentClusterSize;
+
+	//check(!ClusterLodUniformBuffer.IsValid());
+
+	//ClusterLodUniformBuffer = TUniformBufferRef<FLandscapeClusterLODUniformBuffer>::CreateUniformBufferImmediate(Parameters, UniformBuffer_MultiFrame);
 }
 
 
 void FLandscapeRenderSystem::UpdateCluterGPUBuffer() {
-	//#TODO: debug only
-	check(ClusterLODValues_GPU.Buffer->IsValid() && ClusterLODValues_GPU.SRV->IsValid());
-	check(ClusterLODValues_GPU.NumBytes == (sizeof(float) * ClusterLODValues_CPU.Num()))
 
-	float* Data = (float*)RHILockVertexBuffer(ClusterLODValues_GPU.Buffer, 0, ClusterLODValues_GPU.NumBytes, RLM_WriteOnly);
-	FMemory::Memcpy(Data, ClusterLODValues_CPU.GetData(), ClusterLODValues_GPU.NumBytes);
+	SCOPE_CYCLE_COUNTER(STAT_LandscapeClusterUpdateGPUBuffer);
+	//#TODO: 不需要每次Draw更新, 应该每帧更新一次即可
+	float* GpuLodData = (float*)RHILockVertexBuffer(ClusterLODValues_GPU.Buffer, 0, ClusterLODValues_GPU.NumBytes, RLM_WriteOnly);
+	FMemory::Memcpy(GpuLodData, ClusterLODValues_CPU.GetData(), ClusterLODValues_GPU.NumBytes);
 	RHIUnlockVertexBuffer(ClusterLODValues_GPU.Buffer);
+
+	void* GpuInstanceData = RHILockVertexBuffer(ClusterInstanceData_GPU.Buffer, 0, ClusterInstanceData_GPU.NumBytes, RLM_WriteOnly);
+	FMemory::Memcpy(GpuInstanceData, ClusterInstanceData_CPU.GetData(), ClusterInstanceData_GPU.NumBytes);
+	RHIUnlockVertexBuffer(ClusterInstanceData_GPU.Buffer);
 }
+
 
 //@StarLight code - END LandScapeInstance, Added by yanjianhong
 
@@ -5329,8 +5347,11 @@ void FLandscapeNeighborInfo::RegisterNeighbors(FLandscapeComponentSceneProxy* Sc
 			bool bUseInstanceLandscape = (SceneProxy->GetScene().GetFeatureLevel() == ERHIFeatureLevel::ES3_1) && CVarMobileAllowLandScapeInstance.GetValueOnRenderThread() != 0;
 
 			if (bUseInstanceLandscape) {
+				//#TODO: 直接计算
 				uint32 CurComponentClusterSize = (SceneProxy->ComponentSizeQuads + SceneProxy->NumSubsections) / FLandscapeClusterVertexBuffer::ClusterQuadSize;
-				LandscapeRenderSystems.Add(LandscapeKey, new FLandscapeRenderSystem{ bUseInstanceLandscape, CurComponentClusterSize });
+				check(FMath::IsPowerOfTwo(CurComponentClusterSize));
+				auto InstanceProxy = static_cast<FLandscapeComponentSceneProxyInstanceMobile*>(SceneProxy);
+				LandscapeRenderSystems.Add(LandscapeKey, new FLandscapeRenderSystem{ bUseInstanceLandscape, CurComponentClusterSize, InstanceProxy->ComponentTotalSize });
 			}
 			else {
 				LandscapeRenderSystems.Add(LandscapeKey, new FLandscapeRenderSystem{});

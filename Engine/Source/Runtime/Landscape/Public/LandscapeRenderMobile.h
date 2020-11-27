@@ -159,20 +159,33 @@ class FLandscapeComponentSceneProxyInstanceMobile;
 
 struct FLandscapeClusterBatchElementParams
 {
-	FLandscapeClusterBatchElementParams(
-		const TUniformBuffer<FLandscapeComponentClusterUniformBuffer>* InLandscapeComponentClusterUniformBuffer,
-		const FLandscapeComponentSceneProxyInstanceMobile* InSceneProxy,
-		const uint32 InCurLOD)
-		: LandscapeComponentClusterUniformBuffer(InLandscapeComponentClusterUniformBuffer)
-		, SceneProxy(InSceneProxy)
-		, CurLOD(InCurLOD)
+	FLandscapeClusterBatchElementParams() 
+		: LandscapeComponentClusterUniformBuffer(nullptr)
+		, ClusterInstanceDataBuffer(nullptr)
+		, ClusterLodBuffer(nullptr)
 	{
 
 	}
 
+	FLandscapeClusterBatchElementParams(
+		const TUniformBuffer<FLandscapeComponentClusterUniformBuffer>* InLandscapeComponentClusterUniformBuffer,
+		const FReadBuffer* InClusterInstanceDataBuffer,
+		const FReadBuffer* InClusterLodBuffer
+		)
+		: LandscapeComponentClusterUniformBuffer(InLandscapeComponentClusterUniformBuffer)
+		, ClusterInstanceDataBuffer(InClusterInstanceDataBuffer)
+		, ClusterLodBuffer(InClusterLodBuffer)
+	{
+
+	}
+
+	//just ref
 	const TUniformBuffer<FLandscapeComponentClusterUniformBuffer>* LandscapeComponentClusterUniformBuffer;
-	const FLandscapeComponentSceneProxyInstanceMobile* SceneProxy; //#TODO: Cache RenderSystem?
-	const uint32 CurLOD;
+
+	//#TODO: 两个Buffer合成
+	const FReadBuffer* ClusterInstanceDataBuffer;
+	const FReadBuffer* ClusterLodBuffer;
+	TArray<uint32> InstanceOffsetContainer;
 };
 
 
@@ -266,25 +279,6 @@ public:
 };
 
 class FLandscapeComponentSceneProxyInstanceMobile : public FLandscapeComponentSceneProxy {
-private:
-	//struct FComponentCluster {
-
-
-	//};
-
-
-	//struct FComponentCluster {
-	//	FComponentCluster(const FIntPoint& InClusterBase, const FBox& InClusterBound)
-	//		: ClusterBase(InClusterBase)
-	//		, ClusterBound(InClusterBound)
-	//	{}
-
-	//	FIntPoint ClusterBase; 
-	//	FBox ClusterBound;
-	//	//#TODO:添加顶点xy最大大小
-	//};
-
-
 public:
 	SIZE_T GetTypeHash() const override;
 	FLandscapeComponentSceneProxyInstanceMobile(ULandscapeComponent* InComponent);
@@ -293,23 +287,25 @@ public:
 	virtual void CreateRenderThreadResources() override;
 	virtual void OnTransformChanged() override;
 	virtual void DrawStaticElements(FStaticPrimitiveDrawInterface* PDI) override;
-
-private:
-	FBox CalcClusterBounds(uint32 ClusterBaseX, uint32 ClusterBaseY);
+	FBoxSphereBounds CalcClusterBounds(const FIntPoint LocalClusterBase, const FMatrix& InLocalToWorld) const;
 
 
 	//Debug Function
 	void RenderOnlyBox(FPrimitiveDrawInterface* PDI, const FBoxSphereBounds& InBounds) const;
 
 public:
-	TUniformBuffer<FLandscapeComponentClusterUniformBuffer> ComponentClusterUniformBuffer;
 
-	//固定LOD等级0,先不考虑其他LOD等级
-	FReadBuffer ComponentClusterBaseBuffer_GPU;
-	TArray<FIntPoint> ClusterBases_CPU;
-	TArray<FBox> ClusterBounds_CPU;
-	TArray<FLandscapeClusterBatchElementParams> ComponentBatchUserData; //每级LOD独享一份
+	TUniformBuffer<FLandscapeComponentClusterUniformBuffer> ComponentClusterUniformBuffer;
+	FLandscapeClusterBatchElementParams ComponentBatchUserData; 
+	FLandscapeRenderSystem* InstanceRenderSystem;
+	TArray<TArray<FLandscapeRenderSystem::FClusterInstanceData>> LodInstanceDataSparseArray; //存储InstanceData的稀疏结构,需要压缩到ClusterInstanceData_CPU
+
+	TArray<FBoxSphereBounds> ComponentClusterBounds;
+
+
+	FIntPoint ComponentTotalSize;
 
 	friend class FLandscapeInstanceVertexFactoryVSParameters;
+
 };
 //@StarLight code - END LandScapeInstance, Added by yanjianhong--------------------------------------------------------------

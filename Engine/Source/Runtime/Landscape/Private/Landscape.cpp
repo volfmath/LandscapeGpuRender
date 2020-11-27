@@ -102,7 +102,7 @@ DEFINE_STAT(STAT_LandscapeComponentMem);
 
 
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-DEFINE_STAT(STAT_LandscapeClusterInitialBaseAndBounds);
+DEFINE_STAT(STAT_LandscapeClusterUpdateGPUBuffer);
 DEFINE_STAT(STAT_LandscapeClusterFrustumCull);
 DEFINE_STAT(STAT_LandscapeClusterCalcLOD);
 extern TAutoConsoleVariable<int32> CVarMobileAllowLandScapeInstance;

@@ -27,6 +27,12 @@ LandscapeRender.h: New terrain rendering
 #include "PrimitiveSceneProxy.h"
 #include "StaticMeshResources.h"
 
+//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
+#include "../Private/ScenePrivateBase.h"
+
+extern LANDSCAPE_API TAutoConsoleVariable<int32> CVarMobileAllowLandScapeInstance;
+//@StarLight code - END LandScapeInstance, Added by yanjianhong
+
 // This defines the number of border blocks to surround terrain by when generating lightmaps
 #define TERRAIN_PATCH_EXPAND_SCALAR	1
 
@@ -131,6 +137,9 @@ END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeComponentClusterUniformBuffer, LANDSCAPE_API)
+SHADER_PARAMETER(uint32, PerComponentClusterSize)
+SHADER_PARAMETER(FIntPoint, ComponentBase)
+SHADER_PARAMETER(FIntPoint, Size)
 SHADER_PARAMETER(FVector4, HeightmapUVScaleBias)
 SHADER_PARAMETER(FVector4, WeightmapUVScaleBias)
 SHADER_PARAMETER(FVector4, LandscapeLightmapScaleBias)
@@ -143,16 +152,14 @@ SHADER_PARAMETER_TEXTURE(Texture2D, HeightmapTexture)
 SHADER_PARAMETER_SAMPLER(SamplerState, HeightmapTextureSampler)
 SHADER_PARAMETER_TEXTURE(Texture2D, NormalmapTexture)
 SHADER_PARAMETER_SAMPLER(SamplerState, NormalmapTextureSampler)
-//SHADER_PARAMETER_TEXTURE(Texture2D, XYOffsetmapTexture)
-//SHADER_PARAMETER_SAMPLER(SamplerState, XYOffsetmapTextureSampler)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 
-BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeClusterLODUniformBuffer, )
-SHADER_PARAMETER(FIntPoint, Min)
-SHADER_PARAMETER(FIntPoint, Size)
-SHADER_PARAMETER(uint32, PerComponentClusterSize)
-END_GLOBAL_SHADER_PARAMETER_STRUCT()
+//BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeClusterLODUniformBuffer, )
+//SHADER_PARAMETER(FIntPoint, Min)
+//SHADER_PARAMETER(FIntPoint, Size)
+//SHADER_PARAMETER(uint32, PerComponentClusterSize)
+//END_GLOBAL_SHADER_PARAMETER_STRUCT()
 //@StarLight code - END LandScapeInstance, Added by yanjianhong
 
 /* Data needed for the landscape vertex factory to set the render state for an individual batch element */
@@ -604,11 +611,34 @@ struct FLandscapeRenderSystem
 	TUniformBufferRef<FLandscapeSectionLODUniformParameters> UniformBuffer;
 
 	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-	TUniformBufferRef<FLandscapeClusterLODUniformBuffer> ClusterLodUniformBuffer;
+	struct FClusterInstanceData {
+		FClusterInstanceData(const FIntPoint InClusterBase, const FIntPoint InVertexClamp)
+		{
+			InstanceClusterBaseX = static_cast<uint8>(InClusterBase.X);
+			InstanceClusterBaseY = static_cast<uint8>(InClusterBase.Y);
+			InstanceVertexClampX = static_cast<uint8>(InVertexClamp.X);
+			InstanceVertexClampY = static_cast<uint8>(InClusterBase.Y);
+		}
+
+		//不要写析构函数, UE Reset会带来额外消耗(__has_trivial_destructor)
+
+		uint8 InstanceClusterBaseX;
+		uint8 InstanceClusterBaseY;
+		uint8 InstanceVertexClampX;
+		uint8 InstanceVertexClampY;
+	};
+
+	//TUniformBufferRef<FLandscapeClusterLODUniformBuffer> ClusterLodUniformBuffer;
+	TArray<FBoxSphereBounds> ClusterBounds;
+	TArray<FClusterInstanceData> ClusterBaseData;
+
+	TArray<FClusterInstanceData> ClusterInstanceData_CPU;
 	TArray<float> ClusterLODValues_CPU;
+	FReadBuffer ClusterInstanceData_GPU; //Mali 65536?
 	FReadBuffer ClusterLODValues_GPU;
-	bool bUseInstanceLandscape;
+	FIntPoint ComponentTotalSize;
 	uint32 PerComponentClusterSize;
+	bool bUseInstanceLandscape;	
 	//@StarLight code - END LandScapeInstance, Added by yanjianhong
 
 	FCriticalSection CachedValuesCS;
@@ -704,8 +734,8 @@ struct FLandscapeRenderSystem
 		, Min(MAX_int32, MAX_int32)
 		, Size(EForceInit::ForceInitToZero)
 		//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-		, bUseInstanceLandscape(false)
 		, PerComponentClusterSize(0)
+		, bUseInstanceLandscape(false)
 		//@StarLight code - END LandScapeInstance, Added by yanjianhong
 		, CachedView(nullptr)
 	{
@@ -716,21 +746,34 @@ struct FLandscapeRenderSystem
 	}
 
 	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-	FLandscapeRenderSystem(bool InUseInstance, uint32 InComponentClusterSize)
+	FLandscapeRenderSystem(bool InUseInstance, uint32 InComponentClusterSize, const FIntPoint InComponentTotalSize)
 		: NumRegisteredEntities(0)
 		, NumEntitiesWithTessellation(0)
 		, Min(MAX_int32, MAX_int32)
 		, Size(EForceInit::ForceInitToZero)
-		, bUseInstanceLandscape(InUseInstance)
+
+
+		, ComponentTotalSize(InComponentTotalSize)
 		, PerComponentClusterSize(InComponentClusterSize)
+		, bUseInstanceLandscape(InUseInstance)
+
+
 		, CachedView(nullptr)
 	{
+		CreateClusterAllBuffers();
+
 		//#TODO: delete
 		SectionLODValues.SetAllowCPUAccess(true);
 		SectionLODBiases.SetAllowCPUAccess(true);
 		SectionTessellationFalloffC.SetAllowCPUAccess(true);
 		SectionTessellationFalloffK.SetAllowCPUAccess(true);
 	}
+
+	~FLandscapeRenderSystem() {
+		ClusterInstanceData_GPU.Release();
+		ClusterLODValues_GPU.Release();
+	}
+
 	//@StarLight code - END LandScapeInstance, Added by yanjianhong
 
 	void RegisterEntity(FLandscapeComponentSceneProxy* SceneProxy);
@@ -789,8 +832,32 @@ struct FLandscapeRenderSystem
 	void RecreateBuffers(const FSceneView* InView = nullptr);
 
 	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-	void RecreateClusterBuffers();
+	void InitialClusterBaseAndBound(FLandscapeComponentSceneProxy* SceneProxy);
+
+	void CreateClusterAllBuffers();
+
 	void UpdateCluterGPUBuffer();
+
+	//#TODO: 改为位运算
+	uint32 GetClusterLinearIndex(const FIntPoint ComponentBase, const FIntPoint ClusterLocalBase) {
+		uint32 BlockOffset = (ComponentBase.Y * ComponentTotalSize.X + ComponentBase.X) * PerComponentClusterSize * PerComponentClusterSize;
+		uint32 LocalOffset = ClusterLocalBase.Y * PerComponentClusterSize + ClusterLocalBase.X;
+		return BlockOffset + LocalOffset;
+	}
+
+	uint32 GetClusterLinearIndex(const FIntPoint ClusterGlobalBase) {
+		uint32 ClusterBlockX = ClusterGlobalBase.X / PerComponentClusterSize;
+		uint32 ClusterBlockY = ClusterGlobalBase.Y / PerComponentClusterSize * ComponentTotalSize.X;
+		uint32 BlockOffset = (ClusterBlockX + ClusterBlockY)* PerComponentClusterSize * PerComponentClusterSize;
+		uint32 LocalOffset = (ClusterGlobalBase.Y & (PerComponentClusterSize - 1)) * PerComponentClusterSize + (ClusterGlobalBase.X & (PerComponentClusterSize - 1));
+		return BlockOffset + LocalOffset;
+	}
+
+
+	FIntPoint GetClusteGlobalBase(const FIntPoint ComponentBase, const FIntPoint ClusterLocalBase) {
+		return FIntPoint(ComponentBase * PerComponentClusterSize + ClusterLocalBase);
+	}
+
 	//@StarLight code - END LandScapeInstance, Added by yanjianhong
 
 	void EndFrame();

@@ -48,7 +48,7 @@ DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Component Mem"), STAT_LandscapeComponent
 
 
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-DECLARE_CYCLE_STAT_EXTERN(TEXT("Initial ClusterBase And Bounds"), STAT_LandscapeClusterInitialBaseAndBounds, STATGROUP_Landscape, );
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Update Cluster GPUBuffer"), STAT_LandscapeClusterUpdateGPUBuffer, STATGROUP_Landscape, );
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Frustum Culling"), STAT_LandscapeClusterFrustumCull, STATGROUP_Landscape, );
 DECLARE_CYCLE_STAT_EXTERN(TEXT("Calc All Cluster LOD"), STAT_LandscapeClusterCalcLOD, STATGROUP_Landscape, );
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
