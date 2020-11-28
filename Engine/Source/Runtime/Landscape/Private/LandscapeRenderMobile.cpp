@@ -760,17 +760,30 @@ FLandscapeComponentSceneProxyInstanceMobile::FLandscapeComponentSceneProxyInstan
 	: FLandscapeComponentSceneProxy(InComponent)
 	, InstanceRenderSystem(nullptr)
 {
-	check(InComponent);
 
 	check(InComponent->MobileMaterialInterfaces.Num() > 0);
 	check(InComponent->MobileWeightmapTextures.Num() > 0);
 
 
+
+	//最多容纳256x256个Cluster
+	check(ComponentSizeQuads + NumSubsections >= FLandscapeClusterVertexBuffer::ClusterQuadSize);
+	check(FLandscapeClusterVertexBuffer::ClusterQuadSize > 8);
+
 	//#TODO: 挪到RenderSystem
 	uint32 NumComponents = InComponent->GetLandscapeProxy()->LandscapeComponents.Num();
+	check(FMath::IsPowerOfTwo(NumComponents));
 	uint32 SqrtSize = FMath::Sqrt(NumComponents);
 	ComponentTotalSize = FIntPoint(SqrtSize, SqrtSize);
-	check(NumComponents == ComponentTotalSize.X * ComponentTotalSize.Y);
+
+	uint32 HeightmapSizeX = HeightmapTexture->Source.GetSizeX();
+	uint32 HeightmapSizeY = HeightmapTexture->Source.GetSizeY();
+	check(FMath::IsPowerOfTwo(HeightmapSizeX) && FMath::IsPowerOfTwo(HeightmapSizeY));
+	check(FMath::IsPowerOfTwo(ComponentSizeQuads + NumSubsections));
+	check(HeightmapSizeX == HeightmapSizeY);
+	PerHeightMapComponentSize = FIntPoint(HeightmapSizeX / (ComponentSizeQuads + NumSubsections), HeightmapSizeY / (ComponentSizeQuads + NumSubsections));
+
+	
 
 	WeightmapTextures = InComponent->MobileWeightmapTextures;
 	//#TODO: 暂时使用WeightMap, 待替换为HeightMap
@@ -847,14 +860,6 @@ void FLandscapeComponentSceneProxyInstanceMobile::CreateRenderThreadResources() 
 			LodInstanceDataArray.Empty(InstanceRenderSystem->PerComponentClusterSize * InstanceRenderSystem->PerComponentClusterSize);
 		}
 	}
-
-
-	{
-		//最多容纳256x256个Cluster
-		check(ComponentSizeQuads + NumSubsections >= FLandscapeClusterVertexBuffer::ClusterQuadSize);
-		check(FLandscapeClusterVertexBuffer::ClusterQuadSize > 8);
-	}
-
 }
 
 
@@ -1113,33 +1118,42 @@ FBoxSphereBounds FLandscapeComponentSceneProxyInstanceMobile::CalcClusterBounds(
 	//HeightMap在主线程被引用,因此该函数只能被主线程使用
 	check(IsInGameThread());
 	FBox LocalBox(ForceInit);
-
+	
+	//多个Component可能公用一张HeightMap
+	FIntPoint HeightMapLocalComponentBase = FIntPoint(ComponentBase.X & (PerHeightMapComponentSize.X - 1), ComponentBase.Y & (PerHeightMapComponentSize.Y - 1));
+	uint32 HeightMapComponentSampleBaseX = HeightMapLocalComponentBase.X * (ComponentSizeQuads + NumSubsections);
+	uint32 HeightMapComponentSampleBaseY = HeightMapLocalComponentBase.Y * (ComponentSizeQuads + NumSubsections);
+	//一个Component内Cluster的Start与End
+	//StartX和StartY均为几何顶点下标
 	uint32 HeightmapSizeX = HeightmapTexture->Source.GetSizeX();
 	uint32 HeightmapSizeY = HeightmapTexture->Source.GetSizeY();
-	check(HeightmapSizeX == HeightmapSizeY);
-
 	uint32 StartX = LocalClusterBase.X * FLandscapeClusterVertexBuffer::ClusterQuadSize;
 	uint32 EndX = FMath::Min(StartX + FLandscapeClusterVertexBuffer::ClusterQuadSize, static_cast<uint32>(ComponentSizeQuads));
-	check(HeightmapSizeX > EndX);
-
-
 	uint32 StartY = LocalClusterBase.Y * FLandscapeClusterVertexBuffer::ClusterQuadSize;
 	uint32 EndY = FMath::Min(StartY + FLandscapeClusterVertexBuffer::ClusterQuadSize, static_cast<uint32>(ComponentSizeQuads));
+	check(HeightmapSizeX > EndX);
 	check(HeightmapSizeY > EndY);
 	
 	FColor* HeightMapData = reinterpret_cast<FColor*>(HeightmapTexture->Source.LockMip(0));
 
-	//第SubsectionSizeVerts + 1个顶点,采样要偏移
+	//Cluster的Transform是属于Component的,为了方便下列循环下标均在一个Component内的Cluster范围内,采样高度图时根据HeightBase计算对应偏移
+	//因为Cluster不会跨Component,所以高度图中Component接缝值不需要处理
+	//下标为N的顶点在越过每个Section后采样偏移都要+1
+
 	for (uint32 y = StartY; y <= EndY; ++y) {
-		uint32 SampleTexelY = SubsectionSizeVerts  == y ? y + 1 : y;
 
-		for (uint32 x = StartX; x <= EndX; ++x) {			
-			uint32 SampleTexelX = SubsectionSizeVerts  == x ? x + 1 : x;		
-			uint32 HeightMapIndex = HeightmapSizeX * SampleTexelY + SampleTexelX;
-			
-			const auto& HeightValue = HeightMapData[HeightMapIndex];
+		uint32 HeightMapSampleOffsetY = y / SubsectionSizeVerts;
+		uint32 SampleTexelY = y + HeightMapSampleOffsetY + HeightMapComponentSampleBaseY;
 
+		for (uint32 x = StartX; x <= EndX; ++x) {		
+
+			uint32 HeightMapSampleOffsetX = x / SubsectionSizeVerts;
+			uint32 SampleTexelX = x + HeightMapSampleOffsetX + HeightMapComponentSampleBaseX;
+
+			uint32 HeightMapSampleIndex = HeightmapSizeX * SampleTexelY + SampleTexelX;
+			const auto& HeightValue = HeightMapData[HeightMapSampleIndex];
 			float VertexHeight = LandscapeDataAccess::GetLocalHeight(static_cast<uint16>(HeightValue.R << 8u | HeightValue.G));
+
 			const FVector LocalVertex(x, y, VertexHeight);
 			LocalBox += LocalVertex;
 		}

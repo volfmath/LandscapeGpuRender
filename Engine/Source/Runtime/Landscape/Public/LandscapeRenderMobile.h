@@ -299,11 +299,9 @@ public:
 	FLandscapeClusterBatchElementParams ComponentBatchUserData; 
 	FLandscapeRenderSystem* InstanceRenderSystem;
 	TArray<TArray<FLandscapeRenderSystem::FClusterInstanceData>> LodInstanceDataSparseArray; //存储InstanceData的稀疏结构,需要压缩到ClusterInstanceData_CPU
-
 	TArray<FBoxSphereBounds> ComponentClusterBounds;
-
-
 	FIntPoint ComponentTotalSize;
+	FIntPoint PerHeightMapComponentSize;
 
 	friend class FLandscapeInstanceVertexFactoryVSParameters;
 
