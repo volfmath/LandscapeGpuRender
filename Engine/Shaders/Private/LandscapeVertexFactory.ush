@@ -22,8 +22,9 @@ float2 TexCoordOffset;
 
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
 #if USE_MOBILE_INSTANCE
-	Buffer<uint2> ComponentClusterBaseBuffer;
-	Buffer<float> ClusterLODBuffer;
+	uint InstanceOffset;
+	Buffer<uint4> ClusterInstanceDataBuffer;
+	Buffer<float> ClusterLodBuffer;
 #endif
 //@StarLight code - END LandScapeInstance, Added by yanjianhong
 
@@ -41,24 +42,27 @@ int GetComponentLinearIndex()
 
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong#if USE_MOBILE_INSTANCE
 #if USE_MOBILE_INSTANCE
-uint GetClusterLinearIndex(uint InstanceId)
+
+uint GetClusterInstanceId(uint SVInstanceId)
 {
-    uint2 ClusterBase = ComponentClusterBaseBuffer[InstanceId];
-	
-	//#TODO: 硬编码位运算
-	uint2 ComponentSize = GlobalClusterParameters.Size / GlobalClusterParameters.PerComponentClusterSize;
-	uint ClusterBlockY = (ClusterBase.y - GlobalClusterParameters.Min.y) / GlobalClusterParameters.PerComponentClusterSize * ComponentSize.x;
-	uint ClusterBlockX = (ClusterBase.x - GlobalClusterParameters.Min.x) / GlobalClusterParameters.PerComponentClusterSize;
-	uint BlockIndex = (ClusterBlockY + ClusterBlockX) * GlobalClusterParameters.PerComponentClusterSize * GlobalClusterParameters.PerComponentClusterSize;
-	
-	uint LocalSizeIndex_Y = ClusterBase.y & (GlobalClusterParameters.PerComponentClusterSize - 1) * GlobalClusterParameters.PerComponentClusterSize;
-	uint LocalSizeIndex_X = ClusterBase.x & (GlobalClusterParameters.PerComponentClusterSize - 1);
-	
-	uint ClusterLinearIndex = BlockIndex + LocalSizeIndex_Y + LocalSizeIndex_X;
-	
-    //因为Component之间都是并行计算LOD
-	return ClusterLinearIndex;
+    return SVInstanceId + InstanceOffset;
 }
+
+uint GetClusterLinearIndex(uint ClusterInstanceId)
+{
+    uint2 ClusterGlobalBase = ClusterInstanceDataBuffer[ClusterInstanceId].xy;
+    uint ClusterBlockX = ClusterGlobalBase.x / ComponentClusterParameters.PerComponentClusterSize;
+    uint ClusterBlockY = ClusterGlobalBase.y / ComponentClusterParameters.PerComponentClusterSize * ComponentClusterParameters.Size.x;
+    uint BlockOffset = (ClusterBlockX + ClusterBlockY) * ComponentClusterParameters.PerComponentClusterSize * ComponentClusterParameters.PerComponentClusterSize;
+    uint LocalOffset = (ClusterGlobalBase.y & (ComponentClusterParameters.PerComponentClusterSize - 1)) * ComponentClusterParameters.PerComponentClusterSize + (ClusterGlobalBase.x & (ComponentClusterParameters.PerComponentClusterSize - 1));
+    return BlockOffset + LocalOffset;
+}
+
+uint2 GetClusterLocalBase(uint2 ClusterGlobalBase)
+{
+	return ClusterGlobalBase - ComponentClusterParameters.ComponentBase * uint2(ComponentClusterParameters.PerComponentClusterSize, ComponentClusterParameters.PerComponentClusterSize);
+}
+
 #endif
 //@StarLight code - END LandScapeInstance, Added by yanjianhong
 
@@ -76,7 +80,7 @@ float4 GetLodValues(uint ComponentIndex)
 	return LandscapeFixedGrid.LodValues;
 #elif USE_MOBILE_INSTANCE
 	//#TODO: 在CPU IndexBuffer变形, 值写入固定值(像Mobile一样)
-	uint Lod = (uint)floor(ClusterLODBuffer[ComponentIndex]);
+	uint Lod = (uint)floor(ClusterLodBuffer[ComponentIndex]);
 	float LodClusterSizeQuads = (float) (64 >> Lod);
 	return float4(Lod, 0, LodClusterSizeQuads, rcp(LodClusterSizeQuads));
 #elif FEATURE_LEVEL < FEATURE_LEVEL_SM4
@@ -369,7 +373,7 @@ struct FVertexFactoryIntermediates
 	float4 InputPosition;
 	float3 LocalPosition;
 #if USE_MOBILE_INSTANCE
-	uint InstanceId;
+	uint ClusterInstanceId;
 #endif
 	float3 WorldNormal;
 	uint ComponentIndex;
@@ -381,7 +385,7 @@ struct FVertexFactoryIntermediates
 float3 GetLocalPosition(FVertexFactoryIntermediates Intermediates)
 {
 #if USE_MOBILE_INSTANCE
-	float2 BlockCoords = ComponentClusterBaseBuffer[Intermediates.InstanceId] * 64.f;
+	float2 BlockCoords = GetClusterLocalBase(ClusterInstanceDataBuffer[Intermediates.ClusterInstanceId].xy) * float2(64.f, 64.f);
 	return INVARIANT(Intermediates.LocalPosition + float3(BlockCoords, 0));
 #else
 	return INVARIANT(Intermediates.LocalPosition+float3(Intermediates.InputPosition.zw * LandscapeParameters.SubsectionOffsetParams.ww,0));
@@ -414,7 +418,7 @@ FLandscapeTexCoords GetLandscapeTexCoords(FVertexFactoryInput Input, FVertexFact
 
 #if USE_MOBILE_INSTANCE
 	//#TODO: 重新计算UV
-	float2 BlockCoords = ComponentClusterBaseBuffer[Intermediates.InstanceId] * 64.f;
+	float2 BlockCoords = ClusterInstanceDataBuffer[Intermediates.ClusterInstanceId].xy * 64.f;
 	
 	//#TODO: Layer是直接LocalPosition, WeightMap要计算当前位置在WeightMap上的UV, HeightMap暂不开放, LightMap暂不开放
 	Result.LayerTexCoord.xy = float2(0.f, 0.f) /*Intermediates.LocalPosition.xy + BlockCoords;*/;
@@ -463,8 +467,10 @@ float3x3 VertexFactoryGetPerPixelTangentBasis(FVertexFactoryInterpolantsVSToPS I
 	//暂时任然按照Mobile的采样方式采样法线,即使用WeightMapUV,PC自然就用HeightMapUV
 	float3x3 Result;
 #if PIXELSHADER || RAYHITGROUPSHADER || COMPUTESHADER
+	
 #if USE_MOBILE_INSTANCE
 	float4 SampleValue = Texture2DSample(ComponentClusterParameters.NormalmapTexture, ComponentClusterParameters.NormalmapTextureSampler, Interpolants.WeightMapTexCoord);
+	
 #elif FEATURE_LEVEL >= FEATURE_LEVEL_SM4
 	float4 SampleValue = Texture2DSample(LandscapeParameters.NormalmapTexture, LandscapeParameters.NormalmapTextureSampler, Interpolants.WeightHeightMapTexCoord.zw);
 #else
@@ -733,8 +739,9 @@ FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput In
 
 	FVertexFactoryIntermediates Intermediates;
 #if USE_MOBILE_INSTANCE
-	Intermediates.ComponentIndex = GetClusterLinearIndex(Input.InstanceId);
-	Intermediates.InstanceId = Input.InstanceId;
+	uint ClusterInstanceId = GetClusterInstanceId(Input.InstanceId);
+	Intermediates.ComponentIndex = GetClusterLinearIndex(ClusterInstanceId);
+	Intermediates.ClusterInstanceId = ClusterInstanceId;
 #else
     Intermediates.ComponentIndex = GetComponentLinearIndex();
 #endif
