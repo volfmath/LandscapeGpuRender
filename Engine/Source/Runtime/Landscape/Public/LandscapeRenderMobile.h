@@ -182,24 +182,22 @@ struct FLandscapeClusterBatchElementParams
 	//just ref
 	const TUniformBuffer<FLandscapeComponentClusterUniformBuffer>* LandscapeComponentClusterUniformBuffer;
 
-	//#TODO: 两个Buffer合成
 	const FReadBuffer* ClusterInstanceDataBuffer;
 	const FReadBuffer* ClusterLodBuffer;
 	TArray<uint32> InstanceOffsetContainer;
 };
 
-
 //Per ClusterVertexData
+//#TODO: Use uint8?
 struct FLandscapeClusterVertex
 {
 	float PositionX;
 	float PositionY;
 };
 
-
-class FLandscapeInstanceVertexFactoryMobile : public FLandscapeVertexFactory
+class FLandscapeClusterVertexFactoryMobile : public FLandscapeVertexFactory
 {
-	DECLARE_VERTEX_FACTORY_TYPE(FLandscapeInstanceVertexFactoryMobile);
+	DECLARE_VERTEX_FACTORY_TYPE(FLandscapeClusterVertexFactoryMobile);
 
 	typedef FLandscapeVertexFactory Super;
 public:
@@ -209,12 +207,12 @@ public:
 
 	};
 
-	FLandscapeInstanceVertexFactoryMobile(ERHIFeatureLevel::Type InFeatureLevel)
+	FLandscapeClusterVertexFactoryMobile(ERHIFeatureLevel::Type InFeatureLevel)
 		: FLandscapeVertexFactory(InFeatureLevel)
 	{
 	}
 
-	virtual ~FLandscapeInstanceVertexFactoryMobile()
+	virtual ~FLandscapeClusterVertexFactoryMobile()
 	{
 		ReleaseResource();
 	}
@@ -250,11 +248,10 @@ private:
 	friend class FLandscapeComponentSceneProxyInstanceMobile;
 };
 
-
 class FLandscapeClusterVertexBuffer : public FVertexBuffer
 {
 public:
-	static constexpr uint32 ClusterQuadSize = 64;
+	static constexpr uint32 ClusterQuadSize = 32;
 	static constexpr uint32 ClusterVertexDataSize = ClusterQuadSize * sizeof(FLandscapeClusterVertex);
 
 	/** Constructor. */
@@ -285,23 +282,35 @@ public:
 	virtual ~FLandscapeComponentSceneProxyInstanceMobile();
 	virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const override;
 	virtual void CreateRenderThreadResources() override;
+	virtual void DestroyRenderThreadResources() override;
 	virtual void OnTransformChanged() override;
 	virtual void DrawStaticElements(FStaticPrimitiveDrawInterface* PDI) override;
-	FBoxSphereBounds CalcClusterBounds(const FIntPoint LocalClusterBase, const FMatrix& InLocalToWorld) const;
 
+	static FBoxSphereBounds CalcClusterLocalBounds(
+		FIntPoint LocalClusterBase,
+		FIntPoint ComponentBase,
+		FIntPoint HeightMapSize,
+		/*const FMatrix& InLocalToWorld,*/
+		FColor* HeightMapData,
+		uint32 SubsectionSizeQuads,
+		uint32 InNumSubsections
+	);
 
+	
+	
 	//Debug Function
 	void RenderOnlyBox(FPrimitiveDrawInterface* PDI, const FBoxSphereBounds& InBounds) const;
 
 public:
-
+	//[Resource Manager]
 	TUniformBuffer<FLandscapeComponentClusterUniformBuffer> ComponentClusterUniformBuffer;
 	FLandscapeClusterBatchElementParams ComponentBatchUserData; 
-	FLandscapeRenderSystem* InstanceRenderSystem;
 	TArray<TArray<FLandscapeRenderSystem::FClusterInstanceData>> LodInstanceDataSparseArray; //存储InstanceData的稀疏结构,需要压缩到ClusterInstanceData_CPU
-	TArray<FBoxSphereBounds> ComponentClusterBounds;
 	FIntPoint ComponentTotalSize;
-	FIntPoint PerHeightMapComponentSize;
+	uint32 ComponenLinearStartIndex;
+
+	//[Resource ref]
+	FLandscapeRenderSystem* ClusterRenderSystem;
 
 	friend class FLandscapeInstanceVertexFactoryVSParameters;
 

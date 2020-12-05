@@ -286,8 +286,6 @@ void ULandscapeComponent::CheckGenerateLandscapePlatformData(bool bIsCooking, co
 
 	bool bRegenerateVertexData = bMissingVertexData || bMissingPixelData || bHashMismatch;
 	
-	//#TODO: 不再Serialize VertexData, 使用高度图
-
 	if (bRegenerateVertexData)
 	{
 		if (bIsCooking)

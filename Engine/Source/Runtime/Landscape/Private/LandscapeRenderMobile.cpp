@@ -588,6 +588,7 @@ bool FLandscapeComponentSceneProxyMobile::IsUsingCustomLODRules() const
 
 
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong----------------------------------------------------
+
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeComponentClusterUniformBuffer, "ComponentClusterParameters");
 
 //IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeClusterLODUniformBuffer, "GlobalClusterParameters");
@@ -729,9 +730,9 @@ public:
 };
 
 
-IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FLandscapeInstanceVertexFactoryMobile, SF_Vertex, FLandscapeInstanceVertexFactoryVSParameters);
-IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FLandscapeInstanceVertexFactoryMobile, SF_Pixel, FLandscapeInstanceVertexFactoryPSParameters);
-IMPLEMENT_VERTEX_FACTORY_TYPE(FLandscapeInstanceVertexFactoryMobile, "/Engine/Private/LandscapeVertexFactory.ush", true, true, true, false, false);
+IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FLandscapeClusterVertexFactoryMobile, SF_Vertex, FLandscapeInstanceVertexFactoryVSParameters);
+IMPLEMENT_VERTEX_FACTORY_PARAMETER_TYPE(FLandscapeClusterVertexFactoryMobile, SF_Pixel, FLandscapeInstanceVertexFactoryPSParameters);
+IMPLEMENT_VERTEX_FACTORY_TYPE(FLandscapeClusterVertexFactoryMobile, "/Engine/Private/LandscapeVertexFactory.ush", true, true, true, false, false);
 
 
 void FLandscapeClusterVertexBuffer::InitRHI() {
@@ -758,49 +759,32 @@ void FLandscapeClusterVertexBuffer::InitRHI() {
 
 FLandscapeComponentSceneProxyInstanceMobile::FLandscapeComponentSceneProxyInstanceMobile(ULandscapeComponent* InComponent)
 	: FLandscapeComponentSceneProxy(InComponent)
-	, InstanceRenderSystem(nullptr)
+	, ClusterRenderSystem(nullptr)
 {
 
 	check(InComponent->MobileMaterialInterfaces.Num() > 0);
 	check(InComponent->MobileWeightmapTextures.Num() > 0);
 
-
-
 	//最多容纳256x256个Cluster
 	check(ComponentSizeQuads + NumSubsections >= FLandscapeClusterVertexBuffer::ClusterQuadSize);
 	check(FLandscapeClusterVertexBuffer::ClusterQuadSize > 8);
 
+	const uint32 PerComponentClusterSize = (ComponentSizeQuads + NumSubsections) / FLandscapeClusterVertexBuffer::ClusterQuadSize;
+
 	//#TODO: 挪到RenderSystem
-	uint32 NumComponents = InComponent->GetLandscapeProxy()->LandscapeComponents.Num();
-	check(FMath::IsPowerOfTwo(NumComponents));
-	uint32 SqrtSize = FMath::Sqrt(NumComponents);
-	ComponentTotalSize = FIntPoint(SqrtSize, SqrtSize);
+	{
+		uint32 NumComponents = InComponent->GetLandscapeProxy()->LandscapeComponents.Num();
+		check(FMath::IsPowerOfTwo(NumComponents));
+		uint32 SqrtSize = FMath::Sqrt(NumComponents);
+		ComponentTotalSize = FIntPoint(SqrtSize, SqrtSize);
+		
+		ComponenLinearStartIndex = (ComponentBase.Y * ComponentTotalSize.X + ComponentBase.X) * PerComponentClusterSize * PerComponentClusterSize;
+	}
 
-	uint32 HeightmapSizeX = HeightmapTexture->Source.GetSizeX();
-	uint32 HeightmapSizeY = HeightmapTexture->Source.GetSizeY();
-	check(FMath::IsPowerOfTwo(HeightmapSizeX) && FMath::IsPowerOfTwo(HeightmapSizeY));
-	check(FMath::IsPowerOfTwo(ComponentSizeQuads + NumSubsections));
-	check(HeightmapSizeX == HeightmapSizeY);
-	PerHeightMapComponentSize = FIntPoint(HeightmapSizeX / (ComponentSizeQuads + NumSubsections), HeightmapSizeY / (ComponentSizeQuads + NumSubsections));
-
-	
 
 	WeightmapTextures = InComponent->MobileWeightmapTextures;
 	//#TODO: 暂时使用WeightMap, 待替换为HeightMap
 	NormalmapTexture = InComponent->MobileWeightmapTextures[0];
-
-
-	//HeightMap只能在逻辑线程上使用
-	uint32 PerComponentClusterSize = (ComponentSizeQuads + NumSubsections) / FLandscapeClusterVertexBuffer::ClusterQuadSize;
-	ComponentClusterBounds.Empty(PerComponentClusterSize * PerComponentClusterSize);
-	for (uint32 ClusterOffsetY = 0; ClusterOffsetY < PerComponentClusterSize; ++ClusterOffsetY) {
-		for (uint32 ClusterOffsetX = 0; ClusterOffsetX < PerComponentClusterSize; ++ClusterOffsetX) {
-
-			//#TODO: 如果后续要做成脱离Component的模式,需要在RenderSystem中等到所有SceneProxy构造完毕再执行计算Bound的逻辑
-			//SceneProxy的LocalToWorld是CreateRenderThread中初始化,这里手动获取
-			ComponentClusterBounds.Emplace(CalcClusterBounds(FIntPoint(ClusterOffsetX,ClusterOffsetY), InComponent->GetRenderMatrix()));
-		}
-	}
 
 }
 
@@ -823,6 +807,44 @@ void FLandscapeComponentSceneProxyInstanceMobile::CreateRenderThreadResources() 
 	if (IsComponentLevelVisible()){
 		//#TODO: 大部分内容不再需要,重新创建一个RenderSystem
 		RegisterNeighbors(this); 
+		ClusterRenderSystem = LandscapeRenderSystems.FindChecked(LandscapeKey);
+	}
+
+
+	//Transform Bounds from Local To World
+	{
+		for (uint32 i = ComponenLinearStartIndex; i < ComponenLinearStartIndex + ClusterRenderSystem->PerComponentClusterSize * ClusterRenderSystem->PerComponentClusterSize; ++i) {
+
+			//now we can use LocalToworld, because SetTransform has been called
+			ClusterRenderSystem->ClusterBounds[i] = ClusterRenderSystem->ClusterBounds[i].TransformBy(GetLocalToWorld());
+		}
+	}
+
+
+	//计算LOD相关参数,不放在构造函数中的原因是LodSetting只会存储一份
+	{
+		//面积递减系数为ScreenSizeRatioDivider
+		const auto NumClusterLod = FMath::CeilLogTwo(FLandscapeClusterVertexBuffer::ClusterQuadSize) + 1;
+
+		//处理LOD0,单独参数
+		float ScreenSizeRatioDivider = FMath::Max(LandscapeComponent->GetLandscapeProxy()->LOD0DistributionSetting, 1.01f);
+		float CurrentScreenSizeRatio = LandscapeComponent->GetLandscapeProxy()->LOD0ScreenSize;
+		FLandscapeRenderSystem::FClusterLODSetting& ClusterLodSetting = ClusterRenderSystem->ClusterLODSetting;
+		ClusterLodSetting.LastLODIndex = NumClusterLod - 1;
+		ClusterLodSetting.LOD0ScreenSizeSquared = FMath::Square(CurrentScreenSizeRatio);
+
+		//LOD1
+		CurrentScreenSizeRatio /= ScreenSizeRatioDivider;
+		ClusterLodSetting.LOD1ScreenSizeSquared = FMath::Square(CurrentScreenSizeRatio);
+		
+		//其他LOD衰减系数不相同
+		ScreenSizeRatioDivider = FMath::Max(LandscapeComponent->GetLandscapeProxy()->LODDistributionSetting, 1.01f);
+		ClusterLodSetting.LODOnePlusDistributionScalarSquared = FMath::Square(ScreenSizeRatioDivider);
+
+		for (uint32 i = 1; i < NumClusterLod; ++i) {
+			CurrentScreenSizeRatio /= ScreenSizeRatioDivider;
+		}
+		ClusterLodSetting.LastLODScreenSizeSquared = FMath::Square(CurrentScreenSizeRatio);
 	}
 
 
@@ -836,7 +858,7 @@ void FLandscapeComponentSceneProxyInstanceMobile::CreateRenderThreadResources() 
 			FLandscapeComponentSceneProxy::SharedBuffersMap.Add(SharedBuffersKey, SharedBuffers);
 
 			check(SharedBuffers->ClusterVertexBuffer);
-			FLandscapeInstanceVertexFactoryMobile* LandscapeVertexFactory = new FLandscapeInstanceVertexFactoryMobile(FeatureLevel);
+			FLandscapeClusterVertexFactoryMobile* LandscapeVertexFactory = new FLandscapeClusterVertexFactoryMobile(FeatureLevel);
 			LandscapeVertexFactory->MobileData.PositionComponent = FVertexStreamComponent(SharedBuffers->ClusterVertexBuffer, 0, sizeof(FLandscapeClusterVertex), VET_Float2);
 			LandscapeVertexFactory->InitResource();
 			SharedBuffers->ClusterVertexFactory = LandscapeVertexFactory;
@@ -847,21 +869,31 @@ void FLandscapeComponentSceneProxyInstanceMobile::CreateRenderThreadResources() 
 
 	//Initial UniformBuffer and BatchParameter
 	{
-		InstanceRenderSystem = LandscapeRenderSystems.FindChecked(LandscapeKey);
 		ComponentClusterUniformBuffer.InitResource(); //Content和GPUBuffer在内部是分开的(兼容Descript?)
 
 		ComponentBatchUserData.LandscapeComponentClusterUniformBuffer = &ComponentClusterUniformBuffer;
-		ComponentBatchUserData.ClusterInstanceDataBuffer = &InstanceRenderSystem->ClusterInstanceData_GPU;
-		ComponentBatchUserData.ClusterLodBuffer = &InstanceRenderSystem->ClusterLODValues_GPU;
+		ComponentBatchUserData.ClusterInstanceDataBuffer = &ClusterRenderSystem->ClusterInstanceData_GPU;
+		ComponentBatchUserData.ClusterLodBuffer = &ClusterRenderSystem->ClusterLODValues_GPU;
 		ComponentBatchUserData.InstanceOffsetContainer.AddZeroed(SharedBuffers->NumClusterLOD);
 
 		LodInstanceDataSparseArray.AddZeroed(SharedBuffers->NumClusterLOD);
 		for (auto& LodInstanceDataArray : LodInstanceDataSparseArray) {
-			LodInstanceDataArray.Empty(InstanceRenderSystem->PerComponentClusterSize * InstanceRenderSystem->PerComponentClusterSize);
+			LodInstanceDataArray.Empty(ClusterRenderSystem->PerComponentClusterSize * ClusterRenderSystem->PerComponentClusterSize);
 		}
 	}
 }
 
+void FLandscapeComponentSceneProxyInstanceMobile::DestroyRenderThreadResources() {
+
+	const auto& ClusterLocalBounds = FLandscapeRenderSystem::LandscapeSystemClusterLocalBounds.FindChecked(LandscapeComponent->GetLandscapeProxy()->GetLandscapeGuid());
+	for (uint32 i = ComponenLinearStartIndex; i < ComponenLinearStartIndex + ClusterRenderSystem->PerComponentClusterSize * ClusterRenderSystem->PerComponentClusterSize; ++i) {
+
+		//recover the value
+		ClusterRenderSystem->ClusterBounds[i] = ClusterLocalBounds[i];
+	}
+
+	FLandscapeComponentSceneProxy::DestroyRenderThreadResources();
+}
 
 void FLandscapeComponentSceneProxyInstanceMobile::GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const{
 	
@@ -876,49 +908,45 @@ void FLandscapeComponentSceneProxyInstanceMobile::GetDynamicMeshElements(const T
 
 	auto& NonConstLodInstanceDataSparseArray = const_cast<decltype(LodInstanceDataSparseArray)&>(LodInstanceDataSparseArray);
 	auto& NonConstComponentBatchUserData = const_cast<decltype(ComponentBatchUserData)&>(ComponentBatchUserData);
+	const TArray<FBoxSphereBounds>& RenderSystemClusterBoundsRef = ClusterRenderSystem->ClusterBounds;
 
 	{
 		SCOPE_CYCLE_COUNTER(STAT_LandscapeClusterFrustumCull);
-		uint32 ComponentClusterSize = InstanceRenderSystem->PerComponentClusterSize;
-		uint32 StartComponentLinearIndex = InstanceRenderSystem->GetClusterLinearIndex(ComponentBase, FIntPoint(0, 0));
+		uint32 ComponentClusterSize = ClusterRenderSystem->PerComponentClusterSize;
+		//uint32 StartComponentLinearIndex = ClusterRenderSystem->GetClusterLinearIndex(ComponentBase, FIntPoint(0, 0));
 
-		for (uint32 ClusterOffsetY = 0; ClusterOffsetY < ComponentClusterSize; ++ClusterOffsetY) {
-			for (uint32 ClusterOffsetX = 0; ClusterOffsetX < ComponentClusterSize; ++ClusterOffsetX) {
-				uint32 ComponentLocalIndex = ClusterOffsetY * ComponentClusterSize + ClusterOffsetX;
-				uint32 ClusterLinearIndex = StartComponentLinearIndex + ComponentLocalIndex;
-
-				const auto& ClusterBound = ComponentClusterBounds[ComponentLocalIndex];
-				const bool bIsVisible = IntersectBox8Plane(ClusterBound.Origin, ClusterBound.BoxExtent, View->ViewFrustum.PermutedPlanes.GetData());
-				if (!bIsVisible) {
-					continue;
-				}
-
-				//#TODO: Debug Only
-				if (ViewFamily.EngineShowFlags.Bounds) {
-					RenderOnlyBox(Collector.GetPDI(0), ClusterBound);
-				}
-
-				//#TODO: LOD容器
-				uint32 ClusterLod = 0/*static_cast<uint32>(InstanceRenderSystem->ClusterLODValues_CPU[ClusterLinearIndex])*/;
-
-				//按照顺序将数据收集,同级LOD数据打包到一起
-				NonConstLodInstanceDataSparseArray[ClusterLod].Emplace(InstanceRenderSystem->ClusterBaseData[ClusterLinearIndex]);
+		for (uint32 ComponentClusterIndex = 0; ComponentClusterIndex < ComponentClusterSize * ComponentClusterSize; ++ComponentClusterIndex) {
+			uint32 ClusterLinearIndex = ComponenLinearStartIndex + ComponentClusterIndex;
+			const auto& ClusterBound = RenderSystemClusterBoundsRef[ClusterLinearIndex];
+			const bool bIsVisible = IntersectBox8Plane(ClusterBound.Origin, ClusterBound.BoxExtent, View->ViewFrustum.PermutedPlanes.GetData());
+			if (!bIsVisible) {
+				continue;
 			}
+
+			//#TODO: Debug Only
+			if (ViewFamily.EngineShowFlags.Bounds) {
+				RenderOnlyBox(Collector.GetPDI(0), ClusterBound);
+			}
+
+			//#TODO: LOD容器
+			uint32 ClusterLod = ClusterRenderSystem->ClusterLodInt[ClusterLinearIndex];
+
+			//按照顺序将数据收集,同级LOD数据打包到一起
+			NonConstLodInstanceDataSparseArray[ClusterLod].Emplace(ClusterRenderSystem->ClusterBaseData[ClusterLinearIndex]);
 		}
 
 
 		//计算当前Component不同LOD的InstanceOffset
-		uint32 StartInstanceLinearIndexOffset = StartComponentLinearIndex;
+		uint32 StartInstanceLinearIndexOffset = ComponenLinearStartIndex;
 		for (uint32 LodIndex = 0; LodIndex < static_cast<uint32>(NonConstLodInstanceDataSparseArray.Num()); ++LodIndex) {
 			//写入当前LOD的Cluster数据
 			NonConstComponentBatchUserData.InstanceOffsetContainer[LodIndex] = StartInstanceLinearIndexOffset;
 			for (uint32 InstanceIndex = 0; InstanceIndex < static_cast<uint32>(NonConstLodInstanceDataSparseArray[LodIndex].Num()); ++InstanceIndex) {
-				InstanceRenderSystem->ClusterInstanceData_CPU[StartInstanceLinearIndexOffset] = NonConstLodInstanceDataSparseArray[LodIndex][InstanceIndex];
+				ClusterRenderSystem->ClusterInstanceData_CPU[StartInstanceLinearIndexOffset] = NonConstLodInstanceDataSparseArray[LodIndex][InstanceIndex];
 				StartInstanceLinearIndexOffset += 1;
 			}
 		}
 	}
-
 
 	for (uint32 CurLod = 0; CurLod < static_cast<uint32>(NonConstLodInstanceDataSparseArray.Num()); ++CurLod) {
 
@@ -931,7 +959,7 @@ void FLandscapeComponentSceneProxyInstanceMobile::GetDynamicMeshElements(const T
 		uint32 CurClusterVertexSize = CurClusterQuadSize + 1;
 		UMaterialInterface* MaterialInterface = nullptr;
 
-		//#TODO: 使用LOD材质?
+		//#TODO: LOD材质下标可能溢出
 		int32 MaterialIndex = LODIndexToMaterialIndex[CurLod];
 		MaterialInterface = AvailableMaterials[MaterialIndex];
 		check(MaterialInterface != nullptr);
@@ -971,7 +999,6 @@ void FLandscapeComponentSceneProxyInstanceMobile::GetDynamicMeshElements(const T
 		//不需要考虑Hole
 		//ApplyMeshElementModifier(BatchElement, LODIndex);
 	}
-
 
 	//TODO: 直接操作内存,不调用Reset
 	for (auto& LodInstanceDataArray : NonConstLodInstanceDataSparseArray) {
@@ -1042,7 +1069,14 @@ void FLandscapeComponentSceneProxyInstanceMobile::OnTransformChanged() {
 	// Set FLandscapeUniformVSParameters for this Component
 	FLandscapeComponentClusterUniformBuffer LandscapeClusterParams;
 
-	LandscapeClusterParams.PerComponentClusterSize = PerComponentClusterSize;
+	LandscapeClusterParams.ClusterParameter = FVector4(
+		PerComponentClusterSize,
+		1.f / (float)SubsectionSizeQuads,
+		FLandscapeClusterVertexBuffer::ClusterQuadSize,
+		0
+	);
+
+
 	LandscapeClusterParams.ComponentBase = ComponentBase;
 	LandscapeClusterParams.Size = ComponentTotalSize;
 	
@@ -1056,12 +1090,12 @@ void FLandscapeComponentSceneProxyInstanceMobile::OnTransformChanged() {
 		LightmapBiasY,
 		LightmapBiasX);
 
-	LandscapeClusterParams.SubsectionSizeVertsLayerUVPan = FVector4(
-		SubsectionSizeVerts,
-		1.f / (float)SubsectionSizeQuads,
-		SectionBase.X,
-		SectionBase.Y
-	);
+	//LandscapeClusterParams.SubsectionSizeVertsLayerUVPan = FVector4(
+	//	SubsectionSizeVerts,
+	//	1.f / (float)SubsectionSizeQuads,
+	//	SectionBase.X,
+	//	SectionBase.Y
+	//);
 
 	LandscapeClusterParams.SubsectionOffsetParams = FVector4(
 		HeightmapSubsectionOffsetU,
@@ -1113,42 +1147,58 @@ void FLandscapeComponentSceneProxyInstanceMobile::OnTransformChanged() {
 }
 
 
-FBoxSphereBounds FLandscapeComponentSceneProxyInstanceMobile::CalcClusterBounds(const FIntPoint LocalClusterBase, const FMatrix& InLocalToWorld) const{
-	
-	//HeightMap在主线程被引用,因此该函数只能被主线程使用
+FBoxSphereBounds FLandscapeComponentSceneProxyInstanceMobile::CalcClusterLocalBounds(
+	FIntPoint LocalClusterBase,
+	FIntPoint ComponentBase,
+	FIntPoint HeightMapSize,
+	/*const FMatrix& InLocalToWorld,*/
+	FColor* HeightMapData,
+	uint32 SubsectionSizeQuads,
+	uint32 InNumSubsections
+)
+{
+	//该函数可能被Task线程调用,或者直接在GeneratePlatformVertexData中生成并处理Bounds
 	check(IsInGameThread());
 	FBox LocalBox(ForceInit);
 	
-	//多个Component可能公用一张HeightMap
+	uint32 HeightmapSizeX = HeightMapSize.X;
+	uint32 HeightmapSizeY = HeightMapSize.Y;
+	check(FMath::IsPowerOfTwo(HeightmapSizeX) && FMath::IsPowerOfTwo(HeightmapSizeY));
+	check(HeightmapSizeX == HeightmapSizeY);
+
+	uint32 ComponentSizeQuads = SubsectionSizeQuads * InNumSubsections;
+	uint32 SubSectionSizeVerts = SubsectionSizeQuads + 1;
+
+	FIntPoint PerHeightMapComponentSize = FIntPoint(HeightmapSizeX / (ComponentSizeQuads + InNumSubsections), HeightmapSizeY / (ComponentSizeQuads + InNumSubsections));
 	FIntPoint HeightMapLocalComponentBase = FIntPoint(ComponentBase.X & (PerHeightMapComponentSize.X - 1), ComponentBase.Y & (PerHeightMapComponentSize.Y - 1));
-	uint32 HeightMapComponentSampleBaseX = HeightMapLocalComponentBase.X * (ComponentSizeQuads + NumSubsections);
-	uint32 HeightMapComponentSampleBaseY = HeightMapLocalComponentBase.Y * (ComponentSizeQuads + NumSubsections);
+	FIntPoint HeightMapComponentSampleBase = FIntPoint(HeightMapLocalComponentBase.X * (ComponentSizeQuads + InNumSubsections), HeightMapLocalComponentBase.Y * (ComponentSizeQuads + InNumSubsections));
+
 	//一个Component内Cluster的Start与End
 	//StartX和StartY均为几何顶点下标
-	uint32 HeightmapSizeX = HeightmapTexture->Source.GetSizeX();
-	uint32 HeightmapSizeY = HeightmapTexture->Source.GetSizeY();
 	uint32 StartX = LocalClusterBase.X * FLandscapeClusterVertexBuffer::ClusterQuadSize;
 	uint32 EndX = FMath::Min(StartX + FLandscapeClusterVertexBuffer::ClusterQuadSize, static_cast<uint32>(ComponentSizeQuads));
 	uint32 StartY = LocalClusterBase.Y * FLandscapeClusterVertexBuffer::ClusterQuadSize;
 	uint32 EndY = FMath::Min(StartY + FLandscapeClusterVertexBuffer::ClusterQuadSize, static_cast<uint32>(ComponentSizeQuads));
 	check(HeightmapSizeX > EndX);
 	check(HeightmapSizeY > EndY);
-	
-	FColor* HeightMapData = reinterpret_cast<FColor*>(HeightmapTexture->Source.LockMip(0));
+
+	//FColor* HeightMapData = reinterpret_cast<FColor*>(HeightmapTexture->Source.LockMip(0));
 
 	//Cluster的Transform是属于Component的,为了方便下列循环下标均在一个Component内的Cluster范围内,采样高度图时根据HeightBase计算对应偏移
 	//因为Cluster不会跨Component,所以高度图中Component接缝值不需要处理
 	//下标为N的顶点在越过每个Section后采样偏移都要+1
+	//但Mipmap中的数据Section相邻处并不相同
+
 
 	for (uint32 y = StartY; y <= EndY; ++y) {
 
-		uint32 HeightMapSampleOffsetY = y / SubsectionSizeVerts;
-		uint32 SampleTexelY = y + HeightMapSampleOffsetY + HeightMapComponentSampleBaseY;
+		uint32 HeightMapSampleOffsetY = y / SubSectionSizeVerts;
+		uint32 SampleTexelY = y + HeightMapSampleOffsetY + HeightMapComponentSampleBase.Y;
 
 		for (uint32 x = StartX; x <= EndX; ++x) {		
 
-			uint32 HeightMapSampleOffsetX = x / SubsectionSizeVerts;
-			uint32 SampleTexelX = x + HeightMapSampleOffsetX + HeightMapComponentSampleBaseX;
+			uint32 HeightMapSampleOffsetX = x / SubSectionSizeVerts;
+			uint32 SampleTexelX = x + HeightMapSampleOffsetX + HeightMapComponentSampleBase.X;
 
 			uint32 HeightMapSampleIndex = HeightmapSizeX * SampleTexelY + SampleTexelX;
 			const auto& HeightValue = HeightMapData[HeightMapSampleIndex];
@@ -1158,9 +1208,10 @@ FBoxSphereBounds FLandscapeComponentSceneProxyInstanceMobile::CalcClusterBounds(
 			LocalBox += LocalVertex;
 		}
 	}
-	HeightmapTexture->Source.UnlockMip(0);
-	auto WorldBox = LocalBox.TransformBy(InLocalToWorld);
-	return FBoxSphereBounds(WorldBox);
+
+	//HeightmapTexture->Source.UnlockMip(0);
+	/*auto WorldBox = LocalBox.TransformBy(InLocalToWorld);*/
+	return FBoxSphereBounds(LocalBox);
 }
 
 
@@ -1173,14 +1224,14 @@ void FLandscapeComponentSceneProxyInstanceMobile::RenderOnlyBox(FPrimitiveDrawIn
 	DrawCircle(PDI, InBounds.Origin, FVector(0, 1, 0), FVector(0, 0, 1), FColor::Yellow, InBounds.SphereRadius, 32, DrawBoundsDPG);*/
 }
 
-bool FLandscapeInstanceVertexFactoryMobile::ShouldCompilePermutation(const FVertexFactoryShaderPermutationParameters& Parameters)
+bool FLandscapeClusterVertexFactoryMobile::ShouldCompilePermutation(const FVertexFactoryShaderPermutationParameters& Parameters)
 {
 	return GetMaxSupportedFeatureLevel(Parameters.Platform) == ERHIFeatureLevel::ES3_1 &&
 		(Parameters.MaterialParameters.bIsUsedWithLandscape || Parameters.MaterialParameters.bIsSpecialEngineMaterial);
 }
 
 
-void FLandscapeInstanceVertexFactoryMobile::InitRHI()
+void FLandscapeClusterVertexFactoryMobile::InitRHI()
 {
 	// list of declaration items
 	FVertexDeclarationElementList Elements;

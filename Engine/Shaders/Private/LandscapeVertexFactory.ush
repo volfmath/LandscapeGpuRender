@@ -20,11 +20,13 @@
 float2 TexCoordOffset;
 #endif
 
+//#define USE_MOBILE_INSTANCE 1
+
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
 #if USE_MOBILE_INSTANCE
 	uint InstanceOffset;
 	Buffer<uint4> ClusterInstanceDataBuffer;
-	Buffer<float> ClusterLodBuffer;
+	Buffer<float2> ClusterLodBuffer;
 #endif
 //@StarLight code - END LandScapeInstance, Added by yanjianhong
 
@@ -43,24 +45,110 @@ int GetComponentLinearIndex()
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong#if USE_MOBILE_INSTANCE
 #if USE_MOBILE_INSTANCE
 
-uint GetClusterInstanceId(uint SVInstanceId)
+uint GetClusterInstanceIndex(uint SVInstanceId)
 {
     return SVInstanceId + InstanceOffset;
 }
 
-uint GetClusterLinearIndex(uint ClusterInstanceId)
+uint GetClusterLinearIndex(uint ClusterInstanceIndex)
 {
-    uint2 ClusterGlobalBase = ClusterInstanceDataBuffer[ClusterInstanceId].xy;
-    uint ClusterBlockX = ClusterGlobalBase.x / ComponentClusterParameters.PerComponentClusterSize;
-    uint ClusterBlockY = ClusterGlobalBase.y / ComponentClusterParameters.PerComponentClusterSize * ComponentClusterParameters.Size.x;
-    uint BlockOffset = (ClusterBlockX + ClusterBlockY) * ComponentClusterParameters.PerComponentClusterSize * ComponentClusterParameters.PerComponentClusterSize;
-    uint LocalOffset = (ClusterGlobalBase.y & (ComponentClusterParameters.PerComponentClusterSize - 1)) * ComponentClusterParameters.PerComponentClusterSize + (ClusterGlobalBase.x & (ComponentClusterParameters.PerComponentClusterSize - 1));
+    uint PerComponentClusterSize = (uint) ComponentClusterParameters.ClusterParameter.x;
+    uint2 ClusterGlobalBase = ClusterInstanceDataBuffer[ClusterInstanceIndex].xy;
+    uint ClusterBlockX = ClusterGlobalBase.x / PerComponentClusterSize;
+    uint ClusterBlockY = ClusterGlobalBase.y / PerComponentClusterSize * ComponentClusterParameters.Size.x;
+    uint BlockOffset = (ClusterBlockX + ClusterBlockY) * PerComponentClusterSize * PerComponentClusterSize;
+    uint LocalOffset = (ClusterGlobalBase.y & (PerComponentClusterSize - 1)) * PerComponentClusterSize + (ClusterGlobalBase.x & (PerComponentClusterSize - 1));
     return BlockOffset + LocalOffset;
 }
 
-uint2 GetClusterLocalBase(uint2 ClusterGlobalBase)
+uint GetClusterLinearIndexByGlobalBase(uint2 ClusterGlobalBase)
 {
-	return ClusterGlobalBase - ComponentClusterParameters.ComponentBase * uint2(ComponentClusterParameters.PerComponentClusterSize, ComponentClusterParameters.PerComponentClusterSize);
+    uint PerComponentClusterSize = (uint) ComponentClusterParameters.ClusterParameter.x;
+    uint ClusterBlockX = ClusterGlobalBase.x / PerComponentClusterSize;
+    uint ClusterBlockY = ClusterGlobalBase.y / PerComponentClusterSize * ComponentClusterParameters.Size.x;
+    uint BlockOffset = (ClusterBlockX + ClusterBlockY) * PerComponentClusterSize * PerComponentClusterSize;
+    uint LocalOffset = (ClusterGlobalBase.y & (PerComponentClusterSize - 1)) * PerComponentClusterSize + (ClusterGlobalBase.x & (PerComponentClusterSize - 1));
+    return BlockOffset + LocalOffset;
+}
+
+uint2 GetClusterLocalBaseByGlobalBase(uint2 ClusterGlobalBase)
+{
+    uint PerComponentClusterSize = (uint) ComponentClusterParameters.ClusterParameter.x;
+	return ClusterGlobalBase - ComponentClusterParameters.ComponentBase * uint2(PerComponentClusterSize, PerComponentClusterSize);
+}
+
+uint2 GetClusterLocalBaseByLinearIndex(uint ClusterLinearIndex)
+{
+    uint PerComponentClusterSize = (uint) ComponentClusterParameters.ClusterParameter.x;
+    uint PerBlockSize = PerComponentClusterSize * PerComponentClusterSize;
+    uint ComponentBlockSize = ClusterLinearIndex / PerBlockSize;
+    uint LocalOffset = ClusterLinearIndex - ComponentBlockSize * PerBlockSize;
+    uint LocalY = LocalOffset / PerComponentClusterSize;
+    uint LocalX = LocalOffset - LocalY * PerComponentClusterSize;
+    return uint2(LocalX, LocalY);
+}
+
+float4 GetClusterLodValues(uint ClusterLod, uint2 MaxClusterQuadSize)
+{
+	//暴力LOD
+	//1. 2的幂数 64->32->16->8
+	//2. 非2的幂数 62->31->15->7
+    float2 LodClusterSizeQuads = float2(MaxClusterQuadSize >> ClusterLod);
+    return float4(LodClusterSizeQuads, rcp(LodClusterSizeQuads));
+}
+
+/** 
+ * Get current Lods for neighbour section instances. 
+ *       -Y
+ *    - - 0 - -
+ *    |       |
+ * -X 1   P   2 +X
+ *    |       |
+ *    - - 3 - -
+ *       +Y
+ */
+float4 GetNeighborClusterLod(int3 CalculateLodParameter, float LodValue)
+{
+    int2 NeighborOffset[4];
+    NeighborOffset[0] = int2(0, -1);
+    NeighborOffset[1] = int2(-1, 0);
+    NeighborOffset[2] = int2(1, 0);
+    NeighborOffset[3] = int2(0, 1);
+    float NeighborLod[4];
+	
+	UNROLL
+    for (int i = 0; i < 4; i++)
+    {
+        int2 NeighborClusterPos = NeighborOffset[i] + CalculateLodParameter.xy;
+		
+        NeighborClusterPos = max(int2(0, 0), NeighborClusterPos);
+        NeighborClusterPos = min(ComponentClusterParameters.Size - int2(1, 1), NeighborClusterPos);
+		
+        uint NeighborClusterLinearIndex = GetClusterLinearIndexByGlobalBase(NeighborClusterPos);
+		
+        NeighborLod[i] = max(ClusterLodBuffer[NeighborClusterLinearIndex].x, LodValue);
+        //NeighborLod[i] = min(NeighborLod[i] + View.FarShadowStaticMeshLODBias, LandscapeParameters.LastLOD);
+    }
+    return float4(NeighborLod[0], NeighborLod[1], NeighborLod[2], NeighborLod[3]);
+}
+
+
+float CalcClusterLOD(int3 CalculateLodParameter, float2 Clusterxy, float LodValue)
+{
+	// LOD value based on Barycentric coordinate
+	//两个函数拟合:
+	//2xa + (1-2x)b
+	//2(1-x)a + (1-2(1-x))b
+    float4 L0 = float4(Clusterxy.y, Clusterxy.x, (1 - Clusterxy.x), (1 - Clusterxy.y)) * 2;
+
+    float4 LODCalculated4 = L0 * LodValue + (float4(1, 1, 1, 1) - L0) * GetNeighborClusterLod(CalculateLodParameter, LodValue);
+
+    float LODCalculated = ((Clusterxy.x + Clusterxy.y) > 1) ?
+		(Clusterxy.x < Clusterxy.y ? LODCalculated4.w : LODCalculated4.z) :
+		(Clusterxy.x < Clusterxy.y ? LODCalculated4.y : LODCalculated4.x);
+
+    return LODCalculated;
+
 }
 
 #endif
@@ -78,11 +166,6 @@ float4 GetLodValues(uint ComponentIndex)
 #if FIXED_GRID 
 	// Fixed grid has fixed Lod
 	return LandscapeFixedGrid.LodValues;
-#elif USE_MOBILE_INSTANCE
-	//#TODO: 在CPU IndexBuffer变形, 值写入固定值(像Mobile一样)
-	uint Lod = (uint)floor(ClusterLodBuffer[ComponentIndex]);
-	float LodClusterSizeQuads = (float) (64 >> Lod);
-	return float4(Lod, 0, LodClusterSizeQuads, rcp(LodClusterSizeQuads));
 #elif FEATURE_LEVEL < FEATURE_LEVEL_SM4
 	// On mobile we always use the Lod 0 mesh data
 	return float4(0, 0, LandscapeParameters.SubsectionSizeVertsLayerUVPan.xy);
@@ -167,12 +250,6 @@ float4 GetNeighborSectionLod(uint ComponentIndex)
 	}
 	return float4(NeighborLod[0], NeighborLod[1], NeighborLod[2], NeighborLod[3]);
 #endif
-}
-
-
-float CalcClusterLOD(uint ClusterLOD, float2 xyLocalToCluster)
-{
-	return 0;
 }
 
 
@@ -373,10 +450,12 @@ struct FVertexFactoryIntermediates
 	float4 InputPosition;
 	float3 LocalPosition;
 #if USE_MOBILE_INSTANCE
-	uint ClusterInstanceId;
+	uint ClusterLinearIndex;
+#else
+	uint ComponentIndex;
 #endif
 	float3 WorldNormal;
-	uint ComponentIndex;
+	
 	float4 LodValues;
 	float2 LodBias;
 	float2 TessellationFalloff;
@@ -385,7 +464,7 @@ struct FVertexFactoryIntermediates
 float3 GetLocalPosition(FVertexFactoryIntermediates Intermediates)
 {
 #if USE_MOBILE_INSTANCE
-	float2 BlockCoords = GetClusterLocalBase(ClusterInstanceDataBuffer[Intermediates.ClusterInstanceId].xy) * float2(64.f, 64.f);
+    float2 BlockCoords = GetClusterLocalBaseByLinearIndex(Intermediates.ClusterLinearIndex) * ComponentClusterParameters.ClusterParameter.zz /*float2(64.f, 64.f)*/;
 	return INVARIANT(Intermediates.LocalPosition + float3(BlockCoords, 0));
 #else
 	return INVARIANT(Intermediates.LocalPosition+float3(Intermediates.InputPosition.zw * LandscapeParameters.SubsectionOffsetParams.ww,0));
@@ -418,7 +497,6 @@ FLandscapeTexCoords GetLandscapeTexCoords(FVertexFactoryInput Input, FVertexFact
 
 #if USE_MOBILE_INSTANCE
 	//#TODO: 重新计算UV
-	float2 BlockCoords = ClusterInstanceDataBuffer[Intermediates.ClusterInstanceId].xy * 64.f;
 	
 	//#TODO: Layer是直接LocalPosition, WeightMap要计算当前位置在WeightMap上的UV, HeightMap暂不开放, LightMap暂不开放
 	Result.LayerTexCoord.xy = float2(0.f, 0.f) /*Intermediates.LocalPosition.xy + BlockCoords;*/;
@@ -735,23 +813,33 @@ void GetShadowMapCoordinate(FVertexFactoryInterpolantsVSToPS Interpolants, out f
 #endif
 
 FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput Input)
-{
-
+{	
 	FVertexFactoryIntermediates Intermediates;
 #if USE_MOBILE_INSTANCE
-	uint ClusterInstanceId = GetClusterInstanceId(Input.InstanceId);
-	Intermediates.ComponentIndex = GetClusterLinearIndex(ClusterInstanceId);
-	Intermediates.ClusterInstanceId = ClusterInstanceId;
+    uint ClusterInstanceIndex = GetClusterInstanceIndex(Input.InstanceId);
+    uint4 ClusterData = ClusterInstanceDataBuffer[ClusterInstanceIndex];
+
+    Intermediates.ClusterLinearIndex = GetClusterLinearIndexByGlobalBase(ClusterData.xy);
+	
+	//LodValueAndBias: float2(Lodvaluefloat16, LodBiasfloat16)
+    float2 LodValueAndBias = ClusterLodBuffer[Intermediates.ClusterLinearIndex];
+    uint LodIndex = (uint) floor(LodValueAndBias.x);
+	
+	//ClusterLodValues: float4(LodClusterSizeQuads.xy, 1.f / LodClusterSizeQuads.xy)
+    Intermediates.LodValues = GetClusterLodValues(LodIndex, ClusterData.zw);
+    Intermediates.TessellationFalloff = float2(0.f, 0.f);
+    Intermediates.LodBias = float2(LodValueAndBias.y, 0.f);
 #else
     Intermediates.ComponentIndex = GetComponentLinearIndex();
-#endif
 	Intermediates.LodValues = GetLodValues(Intermediates.ComponentIndex);
-	Intermediates.LodBias = GetLodBias(Intermediates.ComponentIndex);
 	Intermediates.TessellationFalloff = GetSectionTessellationFalloff(Intermediates.ComponentIndex);
-
+	Intermediates.LodBias = GetLodBias(Intermediates.ComponentIndex);
+#endif
+	
+	
 #if USE_MOBILE_INSTANCE
-	//#TODO:注意处理最边缘Cluster,最后两个顶点要坍塌,直接min到63?
-	Intermediates.InputPosition = float4(Input.Position, 0.f, 0.f);
+    float2 InputPositionAjust = min(Input.Position, Intermediates.LodValues.xy);
+    Intermediates.InputPosition = float4(InputPositionAjust, 0.f, 0.f);
 	
 #elif FEATURE_LEVEL >= FEATURE_LEVEL_SM4
 	Intermediates.InputPosition = Input.Position;
@@ -764,18 +852,26 @@ FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput In
 	float HoleVertexLod = (float)((uint)(Input.PackedPosition.w * 255.f) & 0xf);
 #endif
 
-	float2 xy = Intermediates.InputPosition.xy * Intermediates.LodValues.w;
 #if USE_MOBILE_INSTANCE
-	float LODCalculated = CalcClusterLOD(Intermediates.ComponentIndex, xy);
+    float2 Clusterxy = InputPositionAjust * Intermediates.LodValues.zw;
+    int3 CalculateLodParameter = int3(ClusterData.xy, Intermediates.ClusterLinearIndex);
+    float LODCalculated = CalcClusterLOD(CalculateLodParameter, Clusterxy, LodValueAndBias.x);
 #else
+	float2 xy = Intermediates.InputPosition.xy * Intermediates.LodValues.w;
 	float LODCalculated = CalcLOD(Intermediates.ComponentIndex, xy, Intermediates.InputPosition.zw);
 #endif
 	
+	//#TODO: Compare to LastLOD--- min
 	float LodValue = floor(LODCalculated);
 	float MorphAlpha = LODCalculated - LodValue;
 
-	// InputPositionLODAdjusted : Position for actual LOD in base LOD units
-#if FEATURE_LEVEL >= FEATURE_LEVEL_SM4 || USE_MOBILE_INSTANCE
+#if USE_MOBILE_INSTANCE
+	
+	//计算实际的LOD与顶点对应LOD的位置
+    float2 ActualLODCoordsInt = floor(Intermediates.InputPosition.xy * pow(2, LodIndex - LodValue));
+    float InvLODScaleFactor = pow(2, -LodValue);
+	
+#elif FEATURE_LEVEL >= FEATURE_LEVEL_SM4
 	float2 ActualLODCoordsInt = floor(Intermediates.InputPosition.xy * pow(2, -(LodValue - Intermediates.LodValues.x)));
 	float InvLODScaleFactor = pow(2, -LodValue);
 #else
@@ -810,11 +906,16 @@ FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput In
 #endif
 
 #if USE_MOBILE_INSTANCE
-	//#TODO:  因为Cluster的优势天生为2的幂数,不用求顶点LOD,直接放大, 当坍塌到最后一级LOD时,MorphAlpha必为0
-	float2 InputPositionLODAdjusted = ActualLODCoordsInt / InvLODScaleFactor;
 	
-	float2 NextLODCoordsInt = floor(ActualLODCoordsInt * 0.5) * 2.f;
-	float2 InputPositionNextLOD = NextLODCoordsInt / InvLODScaleFactor;
+	//将ActualLODCoordsInt缩放到最大大小下
+    float2 ActualLodQuadSize = ClusterData.zw >> uint(LodValue);
+    float2 LODUnitSize = ClusterData.zw / ActualLodQuadSize;
+    float2 InputPositionLODAdjusted = ActualLODCoordsInt * LODUnitSize;
+	
+    float2 NextActualLodQuadSize = max(ClusterData.zw >> uint(LodValue + 1), uint2(1,1));
+    float2 NextLODUnitSize = ClusterData.zw / NextActualLodQuadSize;
+    float2 InputPositionNextLOD = floor(ActualLODCoordsInt * 0.5f) * NextLODUnitSize;
+
 #else
 	// Base to Actual LOD, Base to Next LOD
 	float2 CoordTranslate = float2( LandscapeParameters.SubsectionSizeVertsLayerUVPan.x * InvLODScaleFactor - 1, max(LandscapeParameters.SubsectionSizeVertsLayerUVPan.x * 0.5f * InvLODScaleFactor, 2) - 1 ) * LandscapeParameters.SubsectionSizeVertsLayerUVPan.y;
@@ -828,9 +929,24 @@ FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput In
 
 	// Get the height and normal XY for current and next LOD out of the textures
 #if USE_MOBILE_INSTANCE
-	//#TODO: 采样高度图
-	float Height = 0.f;
-	float HeightNextLOD = 0.f;
+	//Add 0.5 to align to the center of the texel
+    uint2 ClusterLocalBase = GetClusterLocalBaseByGlobalBase(ClusterData.xy);
+    float2 ClusterBasePos = ClusterLocalBase * ComponentClusterParameters.ClusterParameter.zz;
+	
+	//增加当前LOD几何offset,已经证明完全正确,增加对应Section数量的偏移
+    float2 SampleBaseCoords = ClusterBasePos + InputPositionLODAdjusted;
+    float2 SampleOffset = floor(SampleBaseCoords * ComponentClusterParameters.ClusterParameter.yy) * LODUnitSize;
+    float2 SampleClusterCoords = (SampleBaseCoords + SampleOffset) * ComponentClusterParameters.HeightmapUVScaleBias.xy + ComponentClusterParameters.HeightmapUVScaleBias.zw + 0.5f * ComponentClusterParameters.HeightmapUVScaleBias.xy;
+    float4 SampleValue = Texture2DSampleLevel(ComponentClusterParameters.HeightmapTexture, ComponentClusterParameters.HeightmapTextureSampler, SampleClusterCoords, LodValue - Intermediates.LodBias.x);
+	float Height = DecodePackedHeight(SampleValue.xy);
+
+	
+    float2 SampleNextBaseCoords = ClusterBasePos + InputPositionNextLOD;
+    float2 SampleNextOffset = floor(SampleNextBaseCoords * ComponentClusterParameters.ClusterParameter.yy) * NextLODUnitSize;
+    float2 SampleCoordsNextLOD = (SampleNextBaseCoords + SampleNextOffset) * ComponentClusterParameters.HeightmapUVScaleBias.xy + ComponentClusterParameters.HeightmapUVScaleBias.zw + 0.5f * ComponentClusterParameters.HeightmapUVScaleBias.xy;
+    float4 SampleValueNextLOD = Texture2DSampleLevel(ComponentClusterParameters.HeightmapTexture, ComponentClusterParameters.HeightmapTextureSampler, SampleCoordsNextLOD, LodValue + 1 - Intermediates.LodBias.x);
+	float HeightNextLOD = DecodePackedHeight(SampleValueNextLOD.xy);
+	
 #elif FEATURE_LEVEL >= FEATURE_LEVEL_SM4
 	float2 SampleCoords = InputPositionLODAdjusted * LandscapeParameters.HeightmapUVScaleBias.xy + LandscapeParameters.HeightmapUVScaleBias.zw + 0.5*LandscapeParameters.HeightmapUVScaleBias.xy + Intermediates.InputPosition.zw * LandscapeParameters.SubsectionOffsetParams.xy;
 	float4 SampleValue = Texture2DSampleLevel(LandscapeParameters.HeightmapTexture, LandscapeParameters.HeightmapTextureSampler, SampleCoords, LodValue-Intermediates.LodBias.x);
@@ -854,6 +970,7 @@ FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput In
 	InputPositionNextLOD = InputPositionNextLOD + XYOffsetNextLOD;
 #endif
 
+	//最大LOD下MorphAlpha必为0
 	Intermediates.LocalPosition = lerp( float3(InputPositionLODAdjusted, Height), float3(InputPositionNextLOD, HeightNextLOD), MorphAlpha );
 
 	//维持Mobile特性,不采样Normal

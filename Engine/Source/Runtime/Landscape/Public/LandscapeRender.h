@@ -137,13 +137,14 @@ END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeComponentClusterUniformBuffer, LANDSCAPE_API)
-SHADER_PARAMETER(uint32, PerComponentClusterSize)
+//SHADER_PARAMETER(uint32, PerComponentClusterSize)
+SHADER_PARAMETER(FVector4, ClusterParameter)
 SHADER_PARAMETER(FIntPoint, ComponentBase)
 SHADER_PARAMETER(FIntPoint, Size)
 SHADER_PARAMETER(FVector4, HeightmapUVScaleBias)
 SHADER_PARAMETER(FVector4, WeightmapUVScaleBias)
 SHADER_PARAMETER(FVector4, LandscapeLightmapScaleBias)
-SHADER_PARAMETER(FVector4, SubsectionSizeVertsLayerUVPan)
+//SHADER_PARAMETER(FVector4, SubsectionSizeVertsLayerUVPan)
 SHADER_PARAMETER(FVector4, SubsectionOffsetParams)
 SHADER_PARAMETER(FVector4, LightmapSubsectionOffsetParams)
 SHADER_PARAMETER(FVector4, BlendableLayerMask)
@@ -611,13 +612,46 @@ struct FLandscapeRenderSystem
 	TUniformBufferRef<FLandscapeSectionLODUniformParameters> UniformBuffer;
 
 	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
+	//Used to initialize Landscape cluster Bound data, because Bounds can only be calculated in the game thread
+	static TMap<FGuid, TArray<FBoxSphereBounds>> LandscapeSystemClusterLocalBounds;
+
+	struct FClusterLODSetting {
+		float LOD0ScreenSizeSquared;
+		float LOD1ScreenSizeSquared;
+		float LODOnePlusDistributionScalarSquared;
+		float LastLODScreenSizeSquared;
+		uint32 LastLODIndex;
+	};
+
+	static int8 GetClusterLODFromScreenSize(const FClusterLODSetting& LODSettings, float InScreenSizeSquared, float InViewLODScale, float& OutFractionalLOD)
+	{
+		float ScreenSizeSquared = InScreenSizeSquared / InViewLODScale;
+
+		if (ScreenSizeSquared <= LODSettings.LastLODScreenSizeSquared)
+		{
+			OutFractionalLOD = LODSettings.LastLODIndex;
+			return LODSettings.LastLODIndex;
+		}
+		else if (ScreenSizeSquared > LODSettings.LOD1ScreenSizeSquared)
+		{
+			OutFractionalLOD = (LODSettings.LOD0ScreenSizeSquared - FMath::Min(ScreenSizeSquared, LODSettings.LOD0ScreenSizeSquared)) / (LODSettings.LOD0ScreenSizeSquared - LODSettings.LOD1ScreenSizeSquared);
+			return 0;
+		}
+		else
+		{
+			// No longer linear fraction, but worth the cache misses
+			OutFractionalLOD = 1 + FMath::LogX(LODSettings.LODOnePlusDistributionScalarSquared, LODSettings.LOD1ScreenSizeSquared / ScreenSizeSquared);
+			return (int8)OutFractionalLOD;
+		}
+	}
+
 	struct FClusterInstanceData {
 		FClusterInstanceData(const FIntPoint InClusterBase, const FIntPoint InVertexClamp)
 		{
 			InstanceClusterBaseX = static_cast<uint8>(InClusterBase.X);
 			InstanceClusterBaseY = static_cast<uint8>(InClusterBase.Y);
 			InstanceVertexClampX = static_cast<uint8>(InVertexClamp.X);
-			InstanceVertexClampY = static_cast<uint8>(InClusterBase.Y);
+			InstanceVertexClampY = static_cast<uint8>(InVertexClamp.Y);
 		}
 
 		//不要写析构函数, UE Reset会带来额外消耗(__has_trivial_destructor)
@@ -628,12 +662,55 @@ struct FLandscapeRenderSystem
 		uint8 InstanceVertexClampY;
 	};
 
-	//TUniformBufferRef<FLandscapeClusterLODUniformBuffer> ClusterLodUniformBuffer;
+
+	struct FClusterLodAndLodBiasData {
+		FFloat16 ClusterLod;
+		FFloat16 ClusterLodBias;
+	};
+
+	struct FComputeClusterPerViewTask
+	{
+		//Cache数据,避免频繁内存访问
+		FLandscapeRenderSystem& LandscapeRenderSystem;
+		float ViewLODDistanceFactor;
+		FVector ViewOrigin;
+		FMatrix ProjectionMatrix;
+
+		FComputeClusterPerViewTask(FLandscapeRenderSystem& InRenderSystem, const FSceneView& InView);
+
+		FORCEINLINE TStatId GetStatId() const
+		{
+			RETURN_QUICK_DECLARE_CYCLE_STAT(FComputeClusterPerViewTask, STATGROUP_TaskGraphTasks);
+		}
+
+		ENamedThreads::Type GetDesiredThread()
+		{
+			return ENamedThreads::AnyNormalThreadNormalTask;
+		}
+
+		static ESubsequentsMode::Type GetSubsequentsMode()
+		{
+			return ESubsequentsMode::TrackSubsequents;
+		}
+
+		void AnyThreadTask()
+		{
+			LandscapeRenderSystem.ComputeClusterPerViewTask(ViewOrigin, ProjectionMatrix, ViewLODDistanceFactor);
+		}
+
+		void DoTask(ENamedThreads::Type CurrentThread, const FGraphEventRef& MyCompletionGraphEvent)
+		{
+			AnyThreadTask();
+		}
+	};
+
+	FClusterLODSetting ClusterLODSetting;
+	TSharedPtr<class FLandscapeClusterRendererViewExtension, ESPMode::ThreadSafe> LandscapeClusterViewExtension;
 	TArray<FBoxSphereBounds> ClusterBounds;
 	TArray<FClusterInstanceData> ClusterBaseData;
-
 	TArray<FClusterInstanceData> ClusterInstanceData_CPU;
-	TArray<float> ClusterLODValues_CPU;
+	TArray<FClusterLodAndLodBiasData> ClusterLODValues_CPU;
+	TArray<uint8> ClusterLodInt; //For CPU use LOD without floating point conversion
 	FReadBuffer ClusterInstanceData_GPU; //Mali 65536?
 	FReadBuffer ClusterLODValues_GPU;
 	FIntPoint ComponentTotalSize;
@@ -746,22 +823,24 @@ struct FLandscapeRenderSystem
 	}
 
 	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-	FLandscapeRenderSystem(bool InUseInstance, uint32 InComponentClusterSize, const FIntPoint InComponentTotalSize)
+	FLandscapeRenderSystem(
+		bool InUseInstance,
+		uint32 InComponentClusterSize,
+		const FIntPoint InComponentTotalSize,
+		const FGuid& InGuid,
+		TSharedPtr<class FLandscapeClusterRendererViewExtension, ESPMode::ThreadSafe>&& InLandscapeClusterViewExtension
+	)
 		: NumRegisteredEntities(0)
 		, NumEntitiesWithTessellation(0)
 		, Min(MAX_int32, MAX_int32)
 		, Size(EForceInit::ForceInitToZero)
-
-
+		, LandscapeClusterViewExtension(InLandscapeClusterViewExtension)
 		, ComponentTotalSize(InComponentTotalSize)
 		, PerComponentClusterSize(InComponentClusterSize)
 		, bUseInstanceLandscape(InUseInstance)
-
-
 		, CachedView(nullptr)
 	{
-		CreateClusterAllBuffers();
-
+		CreateAllClusterBuffers(InGuid);
 		//#TODO: delete
 		SectionLODValues.SetAllowCPUAccess(true);
 		SectionLODBiases.SetAllowCPUAccess(true);
@@ -832,9 +911,13 @@ struct FLandscapeRenderSystem
 	void RecreateBuffers(const FSceneView* InView = nullptr);
 
 	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
+	void PreComputeViewVisibility_RenderThread(FRHICommandListImmediate& RHICmdList, FSceneView& InView);
+
+	void ComputeClusterPerViewTask(const FVector& ViewOrigin, const FMatrix& ProjMatrix, float ViewLODDistanceFactor);
+
 	void InitialClusterBaseAndBound(FLandscapeComponentSceneProxy* SceneProxy);
 
-	void CreateClusterAllBuffers();
+	void CreateAllClusterBuffers(const FGuid& InGuid);
 
 	void UpdateCluterGPUBuffer();
 
