@@ -6613,9 +6613,9 @@ void ULandscapeComponent::GeneratePlatformVertexData(const ITargetPlatform* Targ
 	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
 	//¸ù¾ÝALandscapeSceneProxy Cache
 	{
+		uint32 NumComponents = GetLandscapeProxy()->LandscapeComponents.Num();
 		if (CVarMobileAllowLandScapeInstance.GetValueOnAnyThread() != 0) {
 
-			uint32 NumComponents = GetLandscapeProxy()->LandscapeComponents.Num();
 			check(FMath::IsPowerOfTwo(NumComponents));
 			uint32 SqrtSize = FMath::Sqrt(NumComponents);
 			FIntPoint ComponentTotalSize = FIntPoint(SqrtSize, SqrtSize);
@@ -6626,6 +6626,9 @@ void ULandscapeComponent::GeneratePlatformVertexData(const ITargetPlatform* Targ
 
 			const auto& LandscapeGuid = GetLandscapeProxy()->GetLandscapeGuid();
 			auto BoundsArrayPtr = FLandscapeRenderSystem::LandscapeSystemClusterLocalBounds.Find(LandscapeGuid);
+
+			UE_LOG(LogTemp, Log, TEXT("Create LocalBoundData, %u-%u-%u-%u"), LandscapeGuid.A, LandscapeGuid.B, LandscapeGuid.C, LandscapeGuid.D);
+
 			if (!BoundsArrayPtr) {
 				auto& BoundsArrayRef = FLandscapeRenderSystem::LandscapeSystemClusterLocalBounds.Emplace(LandscapeGuid, TArray<FBoxSphereBounds>());
 				BoundsArrayRef.AddZeroed(NumCluster);
@@ -6654,6 +6657,8 @@ void ULandscapeComponent::GeneratePlatformVertexData(const ITargetPlatform* Targ
 					BoundsArrayRef[LinearIndex] = CalcBound;
 				}
 			}
+
+			return;
 		}
 	}
 	//@StarLight code - END LandScapeInstance, Added by yanjianhong

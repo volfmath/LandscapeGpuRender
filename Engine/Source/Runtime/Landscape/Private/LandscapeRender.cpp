@@ -769,7 +769,6 @@ void FLandscapeRenderSystem::RegisterEntity(FLandscapeComponentSceneProxy* Scene
 		uint32 CurComponentClusterSize = (SceneProxy->ComponentSizeQuads + SceneProxy->NumSubsections) / FLandscapeClusterVertexBuffer::ClusterQuadSize;
 		check(PerComponentClusterSize == CurComponentClusterSize);
 
-		//多线程执行该函数?
 		InitialClusterBaseAndBound(SceneProxy);
 	}
 	//@StarLight code - END LandScapeInstance, Added by yanjianhong
@@ -872,6 +871,12 @@ void FLandscapeRenderSystem::ResizeAndMoveTo(FIntPoint NewMin, FIntPoint NewSize
 
 void FLandscapeRenderSystem::PrepareView(const FSceneView* View)
 {
+	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
+	//#TODO: remove
+	if (bUseInstanceLandscape)
+		return;
+	//@StarLight code - END LandScapeInstance, Added by yanjianhong
+
 	const bool bExecuteInParallel = FApp::ShouldUseThreadingForPerformance()
 		&& GRenderingThread; // Rendering thread is required to safely use rendering resources in parallel.
 
@@ -891,40 +896,39 @@ void FLandscapeRenderSystem::BeginRenderView(const FSceneView* View)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FLandscapeRenderSystem::BeginRenderView());
 
-	if (FetchHeightmapLODBiasesEventRef.IsValid())
-	{
-		FTaskGraphInterface::Get().WaitUntilTaskCompletes(FetchHeightmapLODBiasesEventRef, ENamedThreads::GetRenderThread_Local());
-		FetchHeightmapLODBiasesEventRef.SafeRelease();
-	}
-
-	if (PerViewParametersTasks.Contains(View))
-	{
-		FTaskGraphInterface::Get().WaitUntilTaskCompletes(PerViewParametersTasks[View], ENamedThreads::GetRenderThread_Local());
-		PerViewParametersTasks.Remove(View);
-	}
-
-	{
-		FScopeLock Lock(&CachedValuesCS);
-
-		SectionLODValues = CachedSectionLODValues[View];
-
-		if (TessellationFalloffSettings.UseTessellationComponentScreenSizeFalloff && NumEntitiesWithTessellation > 0)
-		{
-			SectionTessellationFalloffC = CachedSectionTessellationFalloffC[View];
-			SectionTessellationFalloffK = CachedSectionTessellationFalloffK[View];
-		}
-	}
-
 	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
 	//#TODO: Remove this
 	if (bUseInstanceLandscape) {
 		UpdateCluterGPUBuffer();
 	}
-	else{
-		//
-		check(Min.X == 0 && Min.Y == 0);
+	else {
+		if (FetchHeightmapLODBiasesEventRef.IsValid())
+		{
+			FTaskGraphInterface::Get().WaitUntilTaskCompletes(FetchHeightmapLODBiasesEventRef, ENamedThreads::GetRenderThread_Local());
+			FetchHeightmapLODBiasesEventRef.SafeRelease();
+		}
+
+		if (PerViewParametersTasks.Contains(View))
+		{
+			FTaskGraphInterface::Get().WaitUntilTaskCompletes(PerViewParametersTasks[View], ENamedThreads::GetRenderThread_Local());
+			PerViewParametersTasks.Remove(View);
+		}
+
+		{
+			FScopeLock Lock(&CachedValuesCS);
+
+			SectionLODValues = CachedSectionLODValues[View];
+
+			if (TessellationFalloffSettings.UseTessellationComponentScreenSizeFalloff && NumEntitiesWithTessellation > 0)
+			{
+				SectionTessellationFalloffC = CachedSectionTessellationFalloffC[View];
+				SectionTessellationFalloffK = CachedSectionTessellationFalloffK[View];
+			}
+		}
+
 		RecreateBuffers(View);
 	}
+
 	//@StarLight code - END LandScapeInstance, Added by yanjianhong
 }
 
@@ -1061,7 +1065,9 @@ void FLandscapeRenderSystem::InitialClusterBaseAndBound(FLandscapeComponentScene
 
 void FLandscapeRenderSystem::CreateAllClusterBuffers(const FGuid& InGuid) {
 
-	uint32 NumCluster = ComponentTotalSize.X * ComponentTotalSize.Y * PerComponentClusterSize * PerComponentClusterSize;
+	uint32 NumComponent = ComponentTotalSize.X * ComponentTotalSize.Y;
+	uint32 NumCluster = NumComponent * PerComponentClusterSize * PerComponentClusterSize;
+	
 
 	const auto& ClusterLocalBounds = FLandscapeRenderSystem::LandscapeSystemClusterLocalBounds.FindChecked(InGuid);
 
@@ -1069,17 +1075,14 @@ void FLandscapeRenderSystem::CreateAllClusterBuffers(const FGuid& InGuid) {
 	ClusterBounds = ClusterLocalBounds;
 
 	ClusterBaseData.AddZeroed(NumCluster);
-	ClusterLodInt.AddZeroed(NumCluster);
-
 	check(!ClusterInstanceData_GPU.Buffer.IsValid() && !ClusterInstanceData_GPU.SRV.IsValid());
 	ClusterInstanceData_GPU.Initialize(sizeof(FClusterInstanceData), NumCluster, PF_R8G8B8A8_UINT, BUF_Dynamic);
 	ClusterInstanceData_CPU.AddZeroed(NumCluster);
 
-	//#TODO: PF_R16F
-	ClusterLODValues_GPU.Initialize(sizeof(FClusterLodAndLodBiasData), NumCluster, PF_G16R16F, BUF_Dynamic);
-	ClusterLODValues_CPU.AddZeroed(NumCluster);
 
-	
+	ComponentLodInt.AddZeroed(NumComponent);
+	ComponentLODValues_GPU.Initialize(sizeof(FComponentLodAndLodBiasData), NumComponent, PF_G16R16F, BUF_Dynamic);
+	ComponentLODValues_CPU.AddZeroed(NumComponent);
 }
 
 
@@ -1087,9 +1090,9 @@ void FLandscapeRenderSystem::UpdateCluterGPUBuffer() {
 
 	SCOPE_CYCLE_COUNTER(STAT_LandscapeClusterUpdateGPUBuffer);
 	//#TODO: 不需要每次Draw更新, 应该每帧更新一次即可
-	float* GpuLodData = (float*)RHILockVertexBuffer(ClusterLODValues_GPU.Buffer, 0, ClusterLODValues_GPU.NumBytes, RLM_WriteOnly);
-	FMemory::Memcpy(GpuLodData, ClusterLODValues_CPU.GetData(), ClusterLODValues_GPU.NumBytes);
-	RHIUnlockVertexBuffer(ClusterLODValues_GPU.Buffer);
+	float* GpuLodData = (float*)RHILockVertexBuffer(ComponentLODValues_GPU.Buffer, 0, ComponentLODValues_GPU.NumBytes, RLM_WriteOnly);
+	FMemory::Memcpy(GpuLodData, ComponentLODValues_CPU.GetData(), ComponentLODValues_GPU.NumBytes);
+	RHIUnlockVertexBuffer(ComponentLODValues_GPU.Buffer);
 
 	void* GpuInstanceData = RHILockVertexBuffer(ClusterInstanceData_GPU.Buffer, 0, ClusterInstanceData_GPU.NumBytes, RLM_WriteOnly);
 	FMemory::Memcpy(GpuInstanceData, ClusterInstanceData_CPU.GetData(), ClusterInstanceData_GPU.NumBytes);
@@ -1119,21 +1122,18 @@ void FLandscapeRenderSystem::ComputeClusterPerViewTask(const FVector& ViewOrigin
 
 	for (int32 EntityIndex = 0; EntityIndex < SceneProxies.Num(); EntityIndex++){
 		FLandscapeComponentSceneProxyInstanceMobile* SceneProxy = static_cast<FLandscapeComponentSceneProxyInstanceMobile*>(SceneProxies[EntityIndex]);
-		check(SceneProxy);
-		float SectionLODBias = ((FTexture2DResource*)SceneProxy->HeightmapTexture->Resource)->GetCurrentFirstMip();
+		float ComponentLODBias = ((FTexture2DResource*)SceneProxy->HeightmapTexture->Resource)->GetCurrentFirstMip();
 
-		uint32 StartIndex = SceneProxy->ComponenLinearStartIndex;
-		uint32 EndIndex = SceneProxy->ComponenLinearStartIndex + PerComponentClusterSize * PerComponentClusterSize;
-		for (uint32 i = StartIndex; i < EndIndex ; ++i) {
-			float MeshScreenSizeSquared = ComputeBoundsScreenRadiusSquared(ClusterBounds[i].Origin, ClusterBounds[i].SphereRadius, ViewOrigin, ProjMatrix);
-			float FractionalLOD;
-			ClusterLodInt[i] = GetClusterLODFromScreenSize(ClusterLODSetting, MeshScreenSizeSquared, LODScale * LODScale, FractionalLOD);
-			ClusterLODValues_CPU[i].ClusterLod = FractionalLOD;
-			ClusterLODValues_CPU[i].ClusterLodBias = SectionLODBias;
-		}
+		uint32 ComponentLinearIndex = GetComponentLinearIndex(SceneProxy->ComponentBase);
+
+		float MeshScreenSizeSquared = ComputeBoundsScreenRadiusSquared(SceneProxy->GetBounds().Origin, SceneProxy->GetBounds().SphereRadius, ViewOrigin, ProjMatrix);
+		float FractionalLOD;
+
+		ComponentLodInt[ComponentLinearIndex] = GetClusterLODFromScreenSize(ClusterLODSetting, MeshScreenSizeSquared, LODScale * LODScale, FractionalLOD);
+		ComponentLODValues_CPU[ComponentLinearIndex].ComponentLod = FractionalLOD; //要保证最小LOD大于等于TextureStreaming的等级
+		ComponentLODValues_CPU[ComponentLinearIndex].ComponentLodBias = ComponentLODBias;
 	}
 }
-
 
 //@StarLight code - END LandScapeInstance, Added by yanjianhong
 
@@ -1231,6 +1231,12 @@ void FLandscapeRenderSystem::RecreateBuffers(const FSceneView* InView /* = nullp
 
 void FLandscapeRenderSystem::BeginFrame()
 {
+	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
+	//#TODO: remove
+	if (bUseInstanceLandscape)
+		return;
+	//@StarLight code - END LandScapeInstance, Added by yanjianhong
+
 	CachedView = nullptr;
 
 	CachedSectionLODValues.Empty();
@@ -1469,13 +1475,11 @@ FLandscapeComponentSceneProxy::FLandscapeComponentSceneProxy(ULandscapeComponent
 	SetLevelColor(FLinearColor(1.f, 1.f, 1.f));
 
 	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-	if (FeatureLevel <= ERHIFeatureLevel::ES3_1)	
+	if (FeatureLevel <= ERHIFeatureLevel::ES3_1 && CVarMobileAllowLandScapeInstance.GetValueOnAnyThread() == 0)
 	{
-		if (CVarMobileAllowLandScapeInstance.GetValueOnAnyThread() == 0) {
-			HeightmapTexture = nullptr;
-		}
 		HeightmapSubsectionOffsetU = 0;
 		HeightmapSubsectionOffsetV = 0;
+		HeightmapTexture = nullptr;
 	}
 	else
 	{

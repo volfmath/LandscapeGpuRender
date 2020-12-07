@@ -286,6 +286,8 @@ void ULandscapeComponent::CheckGenerateLandscapePlatformData(bool bIsCooking, co
 
 	bool bRegenerateVertexData = bMissingVertexData || bMissingPixelData || bHashMismatch;
 	
+	UE_LOG(LogTemp, Log, TEXT("bRegenerateVertexData: %d, bMissingVertexData: %d, bMissingPixelData: %d, bHashMismatch: %d "), bRegenerateVertexData, bMissingVertexData, bMissingPixelData, bHashMismatch);
+
 	if (bRegenerateVertexData)
 	{
 		if (bIsCooking)

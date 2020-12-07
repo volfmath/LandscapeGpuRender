@@ -138,13 +138,13 @@ END_GLOBAL_SHADER_PARAMETER_STRUCT()
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeComponentClusterUniformBuffer, LANDSCAPE_API)
 //SHADER_PARAMETER(uint32, PerComponentClusterSize)
-SHADER_PARAMETER(FVector4, ClusterParameter)
 SHADER_PARAMETER(FIntPoint, ComponentBase)
 SHADER_PARAMETER(FIntPoint, Size)
+SHADER_PARAMETER(FVector4, ClusterParameter)
 SHADER_PARAMETER(FVector4, HeightmapUVScaleBias)
 SHADER_PARAMETER(FVector4, WeightmapUVScaleBias)
 SHADER_PARAMETER(FVector4, LandscapeLightmapScaleBias)
-//SHADER_PARAMETER(FVector4, SubsectionSizeVertsLayerUVPan)
+SHADER_PARAMETER(FVector4, SubsectionSizeVertsLayerUVPan)
 SHADER_PARAMETER(FVector4, SubsectionOffsetParams)
 SHADER_PARAMETER(FVector4, LightmapSubsectionOffsetParams)
 SHADER_PARAMETER(FVector4, BlendableLayerMask)
@@ -620,7 +620,7 @@ struct FLandscapeRenderSystem
 		float LOD1ScreenSizeSquared;
 		float LODOnePlusDistributionScalarSquared;
 		float LastLODScreenSizeSquared;
-		uint32 LastLODIndex;
+		int8 LastLODIndex;
 	};
 
 	static int8 GetClusterLODFromScreenSize(const FClusterLODSetting& LODSettings, float InScreenSizeSquared, float InViewLODScale, float& OutFractionalLOD)
@@ -663,9 +663,9 @@ struct FLandscapeRenderSystem
 	};
 
 
-	struct FClusterLodAndLodBiasData {
-		FFloat16 ClusterLod;
-		FFloat16 ClusterLodBias;
+	struct FComponentLodAndLodBiasData {
+		FFloat16 ComponentLod;
+		FFloat16 ComponentLodBias;
 	};
 
 	struct FComputeClusterPerViewTask
@@ -709,10 +709,10 @@ struct FLandscapeRenderSystem
 	TArray<FBoxSphereBounds> ClusterBounds;
 	TArray<FClusterInstanceData> ClusterBaseData;
 	TArray<FClusterInstanceData> ClusterInstanceData_CPU;
-	TArray<FClusterLodAndLodBiasData> ClusterLODValues_CPU;
-	TArray<uint8> ClusterLodInt; //For CPU use LOD without floating point conversion
+	TArray<FComponentLodAndLodBiasData> ComponentLODValues_CPU;
+	TArray<uint8> ComponentLodInt; //For CPU use LOD without floating point conversion
 	FReadBuffer ClusterInstanceData_GPU; //Mali 65536?
-	FReadBuffer ClusterLODValues_GPU;
+	FReadBuffer ComponentLODValues_GPU;
 	FIntPoint ComponentTotalSize;
 	uint32 PerComponentClusterSize;
 	bool bUseInstanceLandscape;	
@@ -850,7 +850,7 @@ struct FLandscapeRenderSystem
 
 	~FLandscapeRenderSystem() {
 		ClusterInstanceData_GPU.Release();
-		ClusterLODValues_GPU.Release();
+		ComponentLODValues_GPU.Release();
 	}
 
 	//@StarLight code - END LandScapeInstance, Added by yanjianhong

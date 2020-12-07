@@ -667,7 +667,7 @@ public:
 		TexCoordOffsetParameter.Bind(ParameterMap, TEXT("TexCoordOffset"));
 		InstanceOffset.Bind(ParameterMap, TEXT("InstanceOffset"));
 		ClusterInstanceDataBuffer.Bind(ParameterMap, TEXT("ClusterInstanceDataBuffer"));
-		ClusterLodBuffer.Bind(ParameterMap, TEXT("ClusterLodBuffer"));
+		ComponentLODBuffer.Bind(ParameterMap, TEXT("ComponentLODBuffer"));
 	}
 
 	void GetElementShaderBindings(
@@ -695,14 +695,14 @@ public:
 		//Update与Bind是分开的,Bind开销是比较小的
 		ShaderBindings.Add(InstanceOffset, BatchElementParams->InstanceOffsetContainer[static_cast<uint32>(BatchElement.InstancedLODIndex)]);
 		ShaderBindings.Add(ClusterInstanceDataBuffer, BatchElementParams->ClusterInstanceDataBuffer->SRV);
-		ShaderBindings.Add(ClusterLodBuffer, BatchElementParams->ClusterLodBuffer->SRV);
+		ShaderBindings.Add(ComponentLODBuffer, BatchElementParams->ComponentLODBuffer->SRV);
 	}
 
 protected:
 	LAYOUT_FIELD(FShaderParameter, TexCoordOffsetParameter);
 	LAYOUT_FIELD(FShaderParameter, InstanceOffset)
 	LAYOUT_FIELD(FShaderResourceParameter, ClusterInstanceDataBuffer)
-	LAYOUT_FIELD(FShaderResourceParameter, ClusterLodBuffer)
+	LAYOUT_FIELD(FShaderResourceParameter, ComponentLODBuffer)
 };
 
 class FLandscapeInstanceVertexFactoryPSParameters : public FVertexFactoryShaderParameters
@@ -821,16 +821,30 @@ void FLandscapeComponentSceneProxyInstanceMobile::CreateRenderThreadResources() 
 	}
 
 
-	//计算LOD相关参数,不放在构造函数中的原因是LodSetting只会存储一份
+	//#TODO: Move To new RenderSystem
 	{
 		//面积递减系数为ScreenSizeRatioDivider
 		const auto NumClusterLod = FMath::CeilLogTwo(FLandscapeClusterVertexBuffer::ClusterQuadSize) + 1;
+
+		check(HeightmapTexture != nullptr && HeightmapTexture->Resource != nullptr);
+
+		uint32 SectionMaxLod = FMath::CeilLogTwo(SubsectionSizeVerts) - 1;
+
+		//#TODO: Remove
+		const uint32 FirstMip = ((FTexture2DResource*)HeightmapTexture->Resource)->GetCurrentFirstMip();
+		check(SectionMaxLod >= FirstMip);
+		//// Make sure out LastLOD is > of MinStreamedLOD otherwise we would not be using the right LOD->MIP, the only drawback is a possible minor memory usage for overallocating static mesh element batch
+		//const int32 MinStreamedLOD = FMath::Min<int32>(FirstMip, SectionMaxLod);
+
+		//ClusterMaxLOD <= SectionMaxLod
+		const uint32 LastClusterLOD = FMath::Min(NumClusterLod - 1, SectionMaxLod);
+
 
 		//处理LOD0,单独参数
 		float ScreenSizeRatioDivider = FMath::Max(LandscapeComponent->GetLandscapeProxy()->LOD0DistributionSetting, 1.01f);
 		float CurrentScreenSizeRatio = LandscapeComponent->GetLandscapeProxy()->LOD0ScreenSize;
 		FLandscapeRenderSystem::FClusterLODSetting& ClusterLodSetting = ClusterRenderSystem->ClusterLODSetting;
-		ClusterLodSetting.LastLODIndex = NumClusterLod - 1;
+		ClusterLodSetting.LastLODIndex = static_cast<int8>(LastClusterLOD);
 		ClusterLodSetting.LOD0ScreenSizeSquared = FMath::Square(CurrentScreenSizeRatio);
 
 		//LOD1
@@ -873,7 +887,7 @@ void FLandscapeComponentSceneProxyInstanceMobile::CreateRenderThreadResources() 
 
 		ComponentBatchUserData.LandscapeComponentClusterUniformBuffer = &ComponentClusterUniformBuffer;
 		ComponentBatchUserData.ClusterInstanceDataBuffer = &ClusterRenderSystem->ClusterInstanceData_GPU;
-		ComponentBatchUserData.ClusterLodBuffer = &ClusterRenderSystem->ClusterLODValues_GPU;
+		ComponentBatchUserData.ComponentLODBuffer = &ClusterRenderSystem->ComponentLODValues_GPU;
 		ComponentBatchUserData.InstanceOffsetContainer.AddZeroed(SharedBuffers->NumClusterLOD);
 
 		LodInstanceDataSparseArray.AddZeroed(SharedBuffers->NumClusterLOD);
@@ -913,6 +927,8 @@ void FLandscapeComponentSceneProxyInstanceMobile::GetDynamicMeshElements(const T
 	{
 		SCOPE_CYCLE_COUNTER(STAT_LandscapeClusterFrustumCull);
 		uint32 ComponentClusterSize = ClusterRenderSystem->PerComponentClusterSize;
+		uint32 ComponentLinearIndex = ClusterRenderSystem->GetComponentLinearIndex(ComponentBase);
+		uint32 ClusterLod = ClusterRenderSystem->ComponentLodInt[ComponentLinearIndex];
 		//uint32 StartComponentLinearIndex = ClusterRenderSystem->GetClusterLinearIndex(ComponentBase, FIntPoint(0, 0));
 
 		for (uint32 ComponentClusterIndex = 0; ComponentClusterIndex < ComponentClusterSize * ComponentClusterSize; ++ComponentClusterIndex) {
@@ -923,13 +939,16 @@ void FLandscapeComponentSceneProxyInstanceMobile::GetDynamicMeshElements(const T
 				continue;
 			}
 
+			//
 			//#TODO: Debug Only
 			if (ViewFamily.EngineShowFlags.Bounds) {
+
+				//float TestA = ClusterRenderSystem->ClusterLODValues_CPU[ClusterLinearIndex].ClusterLod.GetFloat();
+				//float TestB = ClusterRenderSystem->ClusterLODValues_CPU[ClusterLinearIndex].ClusterLodBias.GetFloat();
+				//check(TestA >= TestB);
 				RenderOnlyBox(Collector.GetPDI(0), ClusterBound);
 			}
 
-			//#TODO: LOD容器
-			uint32 ClusterLod = ClusterRenderSystem->ClusterLodInt[ClusterLinearIndex];
 
 			//按照顺序将数据收集,同级LOD数据打包到一起
 			NonConstLodInstanceDataSparseArray[ClusterLod].Emplace(ClusterRenderSystem->ClusterBaseData[ClusterLinearIndex]);
@@ -1069,10 +1088,12 @@ void FLandscapeComponentSceneProxyInstanceMobile::OnTransformChanged() {
 	// Set FLandscapeUniformVSParameters for this Component
 	FLandscapeComponentClusterUniformBuffer LandscapeClusterParams;
 
+	check(FMath::IsPowerOfTwo(SubsectionSizeVerts));
+
 	LandscapeClusterParams.ClusterParameter = FVector4(
 		PerComponentClusterSize,
-		1.f / (float)SubsectionSizeQuads,
 		FLandscapeClusterVertexBuffer::ClusterQuadSize,
+		NumSubsections,
 		0
 	);
 
@@ -1090,12 +1111,12 @@ void FLandscapeComponentSceneProxyInstanceMobile::OnTransformChanged() {
 		LightmapBiasY,
 		LightmapBiasX);
 
-	//LandscapeClusterParams.SubsectionSizeVertsLayerUVPan = FVector4(
-	//	SubsectionSizeVerts,
-	//	1.f / (float)SubsectionSizeQuads,
-	//	SectionBase.X,
-	//	SectionBase.Y
-	//);
+	LandscapeClusterParams.SubsectionSizeVertsLayerUVPan = FVector4(
+		SubsectionSizeVerts,
+		1.f / (float)SubsectionSizeQuads,
+		SectionBase.X,
+		SectionBase.Y
+	);
 
 	LandscapeClusterParams.SubsectionOffsetParams = FVector4(
 		HeightmapSubsectionOffsetU,

@@ -162,7 +162,7 @@ struct FLandscapeClusterBatchElementParams
 	FLandscapeClusterBatchElementParams() 
 		: LandscapeComponentClusterUniformBuffer(nullptr)
 		, ClusterInstanceDataBuffer(nullptr)
-		, ClusterLodBuffer(nullptr)
+		, ComponentLODBuffer(nullptr)
 	{
 
 	}
@@ -170,11 +170,11 @@ struct FLandscapeClusterBatchElementParams
 	FLandscapeClusterBatchElementParams(
 		const TUniformBuffer<FLandscapeComponentClusterUniformBuffer>* InLandscapeComponentClusterUniformBuffer,
 		const FReadBuffer* InClusterInstanceDataBuffer,
-		const FReadBuffer* InClusterLodBuffer
+		const FReadBuffer* InComponentLODBuffer
 		)
 		: LandscapeComponentClusterUniformBuffer(InLandscapeComponentClusterUniformBuffer)
 		, ClusterInstanceDataBuffer(InClusterInstanceDataBuffer)
-		, ClusterLodBuffer(InClusterLodBuffer)
+		, ComponentLODBuffer(InComponentLODBuffer)
 	{
 
 	}
@@ -183,7 +183,7 @@ struct FLandscapeClusterBatchElementParams
 	const TUniformBuffer<FLandscapeComponentClusterUniformBuffer>* LandscapeComponentClusterUniformBuffer;
 
 	const FReadBuffer* ClusterInstanceDataBuffer;
-	const FReadBuffer* ClusterLodBuffer;
+	const FReadBuffer* ComponentLODBuffer;
 	TArray<uint32> InstanceOffsetContainer;
 };
 
