@@ -1231,7 +1231,7 @@ FBoxSphereBounds FLandscapeComponentSceneProxyInstanceMobile::CalcClusterLocalBo
 
 		//不是Section的起点 && 不是Cluster最后一级LOD && 是Cluster的起点
 		if (LocalClusterBase.Y != 0 && NumClusterLod - 1 != MipLevel && y == 0) {
-			VertexPosY = VertexPosY + NextQuadSize;
+			VertexPosY = VertexPosY - NextQuadSize;
 		}
 
 
@@ -1246,7 +1246,7 @@ FBoxSphereBounds FLandscapeComponentSceneProxyInstanceMobile::CalcClusterLocalBo
 
 			//不是Section的起点 && 不是Cluster最后一级LOD && 是Cluster的起点
 			if (LocalClusterBase.X != 0 && NumClusterLod - 1 != MipLevel && x == 0) {
-				VertexPosX = VertexPosX + NextQuadSize;
+				VertexPosX = VertexPosX - NextQuadSize;
 			}
 
 			uint32 HeightMapSampleIndex = HeightMapMipSize.Y * SampleHeightY + SampleHeightX + HeightMapComponentSampleBase.X;
