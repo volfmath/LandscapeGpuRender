@@ -6595,73 +6595,71 @@ void BuildHoleRenderData(int32 InNumSubsections, int32 InSubsectionSizeVerts, TA
 	OutHoleRenderData.MaxIndex = MaxIndex;
 }
 
+//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
+void ULandscapeComponent::GeneratePlatformClusterData() {
+
+	if (IsTemplate())
+	{
+		return;
+	}
+	check(GetHeightmap());
+	check(GetHeightmap()->Source.GetFormat() == TSF_BGRA8);
+
+	TArray<uint8>& NewClusterPlatformData = ClusterPlatformData.UnCompressedClusterLandscapeData;
+	FMemoryWriter ClusterPlatformAr(NewClusterPlatformData);
+
+	FIntPoint ComponentBase = GetSectionBase() / ComponentSizeQuads;
+	const uint32 PerComponentClusterSize = (ComponentSizeQuads + NumSubsections) / FLandscapeClusterVertexBuffer::ClusterQuadSize;
+	uint32 PerComponentClusterSqure = PerComponentClusterSize * PerComponentClusterSize;
+	const uint32 NumClusterLod = FMath::CeilLogTwo(FLandscapeClusterVertexBuffer::ClusterQuadSize) + 1;
+	uint32 NumClusterBound = NumClusterLod * PerComponentClusterSqure;
+	FIntPoint HeightMapSize = FIntPoint(GetHeightmap()->Source.GetSizeX(), GetHeightmap()->Source.GetSizeY());
+
+	check(FMath::IsPowerOfTwo(HeightMapSize.X) && FMath::IsPowerOfTwo(HeightMapSize.Y));
+	check(HeightMapSize.X == HeightMapSize.Y);
+
+	TArray<FBoxSphereBounds> ComponentClusterBounds;
+	ComponentClusterBounds.AddZeroed(NumClusterBound);
+
+	for (uint8 MipLevel = 0; MipLevel < NumClusterLod; ++MipLevel) {
+		TArray64<uint8> HeightmapMipRawData;
+		check(GetHeightmap()->Source.GetMipData(HeightmapMipRawData, MipLevel));
+		FIntPoint HeightMapMipSize = FIntPoint(HeightMapSize.X >> MipLevel, HeightMapSize.Y >> MipLevel);
+		uint32 LodIndexOffset = MipLevel * PerComponentClusterSqure;
+
+		for (uint32 ClusterOffsetY = 0; ClusterOffsetY < PerComponentClusterSize; ++ClusterOffsetY) {
+			for (uint32 ClusterOffsetX = 0; ClusterOffsetX < PerComponentClusterSize; ++ClusterOffsetX) {
+				const auto& CalcBound = FLandscapeComponentSceneProxyInstanceMobile::CalcClusterLocalBounds(
+					FIntPoint(ClusterOffsetX, ClusterOffsetY),
+					ComponentBase,
+					HeightMapMipSize,
+					reinterpret_cast<FColor*>(HeightmapMipRawData.GetData()),
+					SubsectionSizeQuads,
+					NumSubsections,
+					MipLevel
+				);
+
+				uint32 LinearIndex = ClusterOffsetY * PerComponentClusterSize + ClusterOffsetX + LodIndexOffset;
+				ComponentClusterBounds[LinearIndex] = CalcBound;
+			}
+		}
+	}
+
+	ClusterPlatformAr << PerComponentClusterSqure;
+	ClusterPlatformAr.Serialize(ComponentClusterBounds.GetData(), NumClusterBound * sizeof(FBoxSphereBounds));
+}
+//@StarLight code - END LandScapeInstance, Added by yanjianhong
+
 // Generates vertex and index buffer data from the component's height map and visibility textures.
 // For use on mobile platforms that don't use vertex texture fetch for height or alpha testing for visibility.
-//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-extern TAutoConsoleVariable<int32> CVarMobileAllowLandScapeInstance;
-//@StarLight code - END LandScapeInstance, Added by yanjianhong
 void ULandscapeComponent::GeneratePlatformVertexData(const ITargetPlatform* TargetPlatform)
 {
 	if (IsTemplate())
 	{
 		return;
 	}
-
 	check(GetHeightmap());
 	check(GetHeightmap()->Source.GetFormat() == TSF_BGRA8);
-
-	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-	//¸ù¾ÝALandscapeSceneProxy Cache
-	{
-		uint32 NumComponents = GetLandscapeProxy()->LandscapeComponents.Num();
-		if (CVarMobileAllowLandScapeInstance.GetValueOnAnyThread() != 0) {
-
-			check(FMath::IsPowerOfTwo(NumComponents));
-			uint32 SqrtSize = FMath::Sqrt(NumComponents);
-			FIntPoint ComponentTotalSize = FIntPoint(SqrtSize, SqrtSize);
-
-			FIntPoint ComponentBase = GetSectionBase() / ComponentSizeQuads;
-			uint32 PerComponentClusterSize = (ComponentSizeQuads + NumSubsections) / FLandscapeClusterVertexBuffer::ClusterQuadSize;
-			uint32 NumCluster = NumComponents * PerComponentClusterSize * PerComponentClusterSize;
-
-			const auto& LandscapeGuid = GetLandscapeProxy()->GetLandscapeGuid();
-			auto BoundsArrayPtr = FLandscapeRenderSystem::LandscapeSystemClusterLocalBounds.Find(LandscapeGuid);
-
-			UE_LOG(LogTemp, Log, TEXT("Create LocalBoundData, %u-%u-%u-%u"), LandscapeGuid.A, LandscapeGuid.B, LandscapeGuid.C, LandscapeGuid.D);
-
-			if (!BoundsArrayPtr) {
-				auto& BoundsArrayRef = FLandscapeRenderSystem::LandscapeSystemClusterLocalBounds.Emplace(LandscapeGuid, TArray<FBoxSphereBounds>());
-				BoundsArrayRef.AddZeroed(NumCluster);
-				BoundsArrayPtr = &BoundsArrayRef;
-			}
-
-
-			TArray64<uint8> HeightmapMipRawData;
-			check(GetHeightmap()->Source.GetMipData(HeightmapMipRawData, 0));
-
-			auto& BoundsArrayRef = *BoundsArrayPtr;
-			uint32 StartComponentLinearIndex = (ComponentBase.Y * ComponentTotalSize.X + ComponentBase.X) * PerComponentClusterSize * PerComponentClusterSize;
-
-			for (uint32 ClusterOffsetY = 0; ClusterOffsetY < PerComponentClusterSize; ++ClusterOffsetY) {
-				for (uint32 ClusterOffsetX = 0; ClusterOffsetX < PerComponentClusterSize; ++ClusterOffsetX) {
-					const auto& CalcBound = FLandscapeComponentSceneProxyInstanceMobile::CalcClusterLocalBounds(
-						FIntPoint(ClusterOffsetX, ClusterOffsetY),
-						ComponentBase,
-						FIntPoint(GetHeightmap()->Source.GetSizeX(), GetHeightmap()->Source.GetSizeY()),
-						reinterpret_cast<FColor*>(HeightmapMipRawData.GetData()),
-						SubsectionSizeQuads,
-						NumSubsections
-					);
-
-					uint32 LinearIndex = StartComponentLinearIndex + ClusterOffsetY * PerComponentClusterSize + ClusterOffsetX;
-					BoundsArrayRef[LinearIndex] = CalcBound;
-				}
-			}
-
-			return;
-		}
-	}
-	//@StarLight code - END LandScapeInstance, Added by yanjianhong
 
 	TArray<uint8> NewPlatformData;
 	FMemoryWriter PlatformAr(NewPlatformData);

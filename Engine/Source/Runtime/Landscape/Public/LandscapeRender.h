@@ -28,9 +28,7 @@ LandscapeRender.h: New terrain rendering
 #include "StaticMeshResources.h"
 
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-#include "../Private/ScenePrivateBase.h"
-
-extern LANDSCAPE_API TAutoConsoleVariable<int32> CVarMobileAllowLandScapeInstance;
+extern TAutoConsoleVariable<int32> CVarMobileAllowLandScapeInstance;
 //@StarLight code - END LandScapeInstance, Added by yanjianhong
 
 // This defines the number of border blocks to surround terrain by when generating lightmaps
@@ -612,8 +610,7 @@ struct FLandscapeRenderSystem
 	TUniformBufferRef<FLandscapeSectionLODUniformParameters> UniformBuffer;
 
 	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-	//Used to initialize Landscape cluster Bound data, because Bounds can only be calculated in the game thread
-	static TMap<FGuid, TArray<FBoxSphereBounds>> LandscapeSystemClusterLocalBounds;
+	/*static TMap<FGuid, TArray<FBoxSphereBounds>> LandscapeSystemClusterLocalBounds;*/
 
 	struct FClusterLODSetting {
 		float LOD0ScreenSizeSquared;
@@ -646,20 +643,20 @@ struct FLandscapeRenderSystem
 	}
 
 	struct FClusterInstanceData {
-		FClusterInstanceData(const FIntPoint InClusterBase, const FIntPoint InVertexClamp)
+		FClusterInstanceData(const FIntPoint InClusterBase/*, const FIntPoint InVertexClamp*/)
 		{
 			InstanceClusterBaseX = static_cast<uint8>(InClusterBase.X);
 			InstanceClusterBaseY = static_cast<uint8>(InClusterBase.Y);
-			InstanceVertexClampX = static_cast<uint8>(InVertexClamp.X);
-			InstanceVertexClampY = static_cast<uint8>(InVertexClamp.Y);
+			//InstanceVertexClampX = static_cast<uint8>(InVertexClamp.X);
+			//InstanceVertexClampY = static_cast<uint8>(InVertexClamp.Y);
 		}
 
 		//不要写析构函数, UE Reset会带来额外消耗(__has_trivial_destructor)
 
 		uint8 InstanceClusterBaseX;
 		uint8 InstanceClusterBaseY;
-		uint8 InstanceVertexClampX;
-		uint8 InstanceVertexClampY;
+		//uint8 InstanceVertexClampX;
+		//uint8 InstanceVertexClampY;
 	};
 
 
@@ -706,7 +703,7 @@ struct FLandscapeRenderSystem
 
 	FClusterLODSetting ClusterLODSetting;
 	TSharedPtr<class FLandscapeClusterRendererViewExtension, ESPMode::ThreadSafe> LandscapeClusterViewExtension;
-	TArray<FBoxSphereBounds> ClusterBounds;
+	TArray<TArray<FBoxSphereBounds>> ClusterBounds;
 	TArray<FClusterInstanceData> ClusterBaseData;
 	TArray<FClusterInstanceData> ClusterInstanceData_CPU;
 	TArray<FComponentLodAndLodBiasData> ComponentLODValues_CPU;
@@ -716,6 +713,7 @@ struct FLandscapeRenderSystem
 	FIntPoint ComponentTotalSize;
 	uint32 PerComponentClusterSize;
 	bool bUseInstanceLandscape;	
+	bool bUpdateBuffer; //表示是否已经更新过Buffer
 	//@StarLight code - END LandScapeInstance, Added by yanjianhong
 
 	FCriticalSection CachedValuesCS;

@@ -98,7 +98,6 @@ TAutoConsoleVariable<int32> CVarMobileAllowLandScapeInstance(
 	ECVF_Scalability
 );
 
-TMap<FGuid, TArray<FBoxSphereBounds>> FLandscapeRenderSystem::LandscapeSystemClusterLocalBounds;
 //@StarLight code - End LandScapeInstance, Added by yanjianhong
 
 
@@ -899,7 +898,10 @@ void FLandscapeRenderSystem::BeginRenderView(const FSceneView* View)
 	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
 	//#TODO: Remove this
 	if (bUseInstanceLandscape) {
-		UpdateCluterGPUBuffer();
+		if (!bUpdateBuffer) {
+			UpdateCluterGPUBuffer();
+			bUpdateBuffer = true;
+		}
 	}
 	else {
 		if (FetchHeightmapLODBiasesEventRef.IsValid())
@@ -1043,9 +1045,9 @@ void FLandscapeRenderSystem::InitialClusterBaseAndBound(FLandscapeComponentScene
 	auto InstanceProxy = static_cast<FLandscapeComponentSceneProxyInstanceMobile*>(SceneProxy);
 	for (uint32 ClusterOffsetY = 0; ClusterOffsetY < PerComponentClusterSize; ++ClusterOffsetY) {
 		//边缘最大顶点值
-		uint32 CollapseValueY = ClusterOffsetY == PerComponentClusterSize - 1 ? 
-			FLandscapeClusterVertexBuffer::ClusterQuadSize - SceneProxy->NumSubsections : 
-			FLandscapeClusterVertexBuffer::ClusterQuadSize;
+		//uint32 CollapseValueY = ClusterOffsetY == PerComponentClusterSize - 1 ? 
+		//	FLandscapeClusterVertexBuffer::ClusterQuadSize - SceneProxy->NumSubsections : 
+		//	FLandscapeClusterVertexBuffer::ClusterQuadSize;
 
 		for (uint32 ClusterOffsetX = 0; ClusterOffsetX < PerComponentClusterSize; ++ClusterOffsetX) {
 
@@ -1053,11 +1055,11 @@ void FLandscapeRenderSystem::InitialClusterBaseAndBound(FLandscapeComponentScene
 			FIntPoint ClusterGlobalBase = GetClusteGlobalBase(SceneProxy->ComponentBase, FIntPoint(ClusterOffsetX, ClusterOffsetY));
 
 			//每到一个Component边缘就要记录
-			uint32 CollapseValueX = ClusterOffsetX == PerComponentClusterSize - 1 ?
-				FLandscapeClusterVertexBuffer::ClusterQuadSize - SceneProxy->NumSubsections :
-				FLandscapeClusterVertexBuffer::ClusterQuadSize;
+			//uint32 CollapseValueX = ClusterOffsetX == PerComponentClusterSize - 1 ?
+			//	FLandscapeClusterVertexBuffer::ClusterQuadSize - SceneProxy->NumSubsections :
+			//	FLandscapeClusterVertexBuffer::ClusterQuadSize;
 
-			ClusterBaseData[ClusterLinearIndex] = FClusterInstanceData(ClusterGlobalBase, FIntPoint(CollapseValueX, CollapseValueY));
+			ClusterBaseData[ClusterLinearIndex] = FClusterInstanceData(ClusterGlobalBase/*, FIntPoint(CollapseValueX, CollapseValueY)*/);
 		}
 	}
 }
@@ -1067,16 +1069,15 @@ void FLandscapeRenderSystem::CreateAllClusterBuffers(const FGuid& InGuid) {
 
 	uint32 NumComponent = ComponentTotalSize.X * ComponentTotalSize.Y;
 	uint32 NumCluster = NumComponent * PerComponentClusterSize * PerComponentClusterSize;
-	
+	const uint32 NumClusterLod = FMath::CeilLogTwo(FLandscapeClusterVertexBuffer::ClusterQuadSize) + 1;
 
-	const auto& ClusterLocalBounds = FLandscapeRenderSystem::LandscapeSystemClusterLocalBounds.FindChecked(InGuid);
-
-	//Copy to new array
-	ClusterBounds = ClusterLocalBounds;
+	ClusterBounds.AddZeroed(NumClusterLod);
+	for (uint32 i = 0; i < static_cast<uint32>(ClusterBounds.Num()); ++i) {
+		ClusterBounds[i].AddZeroed(NumCluster);
+	}
 
 	ClusterBaseData.AddZeroed(NumCluster);
-	check(!ClusterInstanceData_GPU.Buffer.IsValid() && !ClusterInstanceData_GPU.SRV.IsValid());
-	ClusterInstanceData_GPU.Initialize(sizeof(FClusterInstanceData), NumCluster, PF_R8G8B8A8_UINT, BUF_Dynamic);
+	ClusterInstanceData_GPU.Initialize(sizeof(FClusterInstanceData), NumCluster, PF_R16_UINT, BUF_Dynamic);
 	ClusterInstanceData_CPU.AddZeroed(NumCluster);
 
 
@@ -1088,8 +1089,8 @@ void FLandscapeRenderSystem::CreateAllClusterBuffers(const FGuid& InGuid) {
 
 void FLandscapeRenderSystem::UpdateCluterGPUBuffer() {
 
-	SCOPE_CYCLE_COUNTER(STAT_LandscapeClusterUpdateGPUBuffer);
-	//#TODO: 不需要每次Draw更新, 应该每帧更新一次即可
+	//SCOPE_CYCLE_COUNTER(STAT_LandscapeClusterUpdateGPUBuffer);
+
 	float* GpuLodData = (float*)RHILockVertexBuffer(ComponentLODValues_GPU.Buffer, 0, ComponentLODValues_GPU.NumBytes, RLM_WriteOnly);
 	FMemory::Memcpy(GpuLodData, ComponentLODValues_CPU.GetData(), ComponentLODValues_GPU.NumBytes);
 	RHIUnlockVertexBuffer(ComponentLODValues_GPU.Buffer);
@@ -1233,8 +1234,10 @@ void FLandscapeRenderSystem::BeginFrame()
 {
 	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
 	//#TODO: remove
-	if (bUseInstanceLandscape)
+	if (bUseInstanceLandscape) {
+		bUpdateBuffer = false;
 		return;
+	}
 	//@StarLight code - END LandScapeInstance, Added by yanjianhong
 
 	CachedView = nullptr;
@@ -4156,6 +4159,7 @@ FLandscapeSharedBuffers::FLandscapeSharedBuffers(const int32 InSharedBuffersKey,
 		ClusterVertexBuffer = new FLandscapeClusterVertexBuffer();
 		//退化到Quad为1
 		check(ClusterIndexBuffers.Num() == 0);
+		static_assert(FLandscapeClusterVertexBuffer::ClusterQuadSize * FLandscapeClusterVertexBuffer::ClusterQuadSize * 6 < 0x10000, "");
 		ClusterIndexBuffers.AddZeroed(NumClusterLOD);
 		CreateClusterIndexBuffers<uint16>();
 	}

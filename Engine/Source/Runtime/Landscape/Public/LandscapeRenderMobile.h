@@ -188,11 +188,12 @@ struct FLandscapeClusterBatchElementParams
 };
 
 //Per ClusterVertexData
-//#TODO: Use uint8?
 struct FLandscapeClusterVertex
 {
-	float PositionX;
-	float PositionY;
+	uint8 PositionX;
+	uint8 PositionY;
+	uint8 Black_0;
+	uint8 Black_1;
 };
 
 class FLandscapeClusterVertexFactoryMobile : public FLandscapeVertexFactory
@@ -251,7 +252,7 @@ private:
 class FLandscapeClusterVertexBuffer : public FVertexBuffer
 {
 public:
-	static constexpr uint32 ClusterQuadSize = 32;
+	static constexpr uint32 ClusterQuadSize = 16;
 	static constexpr uint32 ClusterVertexDataSize = ClusterQuadSize * sizeof(FLandscapeClusterVertex);
 
 	/** Constructor. */
@@ -293,7 +294,8 @@ public:
 		/*const FMatrix& InLocalToWorld,*/
 		FColor* HeightMapData,
 		uint32 SubsectionSizeQuads,
-		uint32 InNumSubsections
+		uint32 InNumSubsections,
+		uint8 MipLevel
 	);
 
 	
@@ -311,6 +313,7 @@ public:
 
 	//[Resource ref]
 	FLandscapeRenderSystem* ClusterRenderSystem;
+	TSharedPtr<FLandscapeMobileClusterRenderData, ESPMode::ThreadSafe> MobileClusterRenderData;
 
 	friend class FLandscapeInstanceVertexFactoryVSParameters;
 

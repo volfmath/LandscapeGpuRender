@@ -281,37 +281,62 @@ void ULandscapeComponent::CheckGenerateLandscapePlatformData(bool bIsCooking, co
 	FGuid NewSourceHash = FGuid(Hash[0] ^ Hash[4], Hash[1], Hash[2], Hash[3]);
 
 	bool bHashMismatch = MobileDataSourceHash != NewSourceHash;
-	bool bMissingVertexData = !PlatformData.HasValidPlatformData();
+
+	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
+	bool bMissingVertexData;
+	if (CVarMobileAllowLandScapeInstance.GetValueOnAnyThread() != 0) {
+		bMissingVertexData = !ClusterPlatformData.HasValidPlatformData();
+	}
+	else {
+		bMissingVertexData = !PlatformData.HasValidPlatformData();
+	}
+	//@StarLight code - END LandScapeInstance, Added by yanjianhong
+
 	bool bMissingPixelData = MobileMaterialInterfaces.Num() == 0 || MobileWeightmapTextures.Num() == 0 || MaterialPerLOD.Num() == 0;
 
 	bool bRegenerateVertexData = bMissingVertexData || bMissingPixelData || bHashMismatch;
 	
-	UE_LOG(LogTemp, Log, TEXT("bRegenerateVertexData: %d, bMissingVertexData: %d, bMissingPixelData: %d, bHashMismatch: %d "), bRegenerateVertexData, bMissingVertexData, bMissingPixelData, bHashMismatch);
-
 	if (bRegenerateVertexData)
 	{
 		if (bIsCooking)
 		{
 			// The DDC is only useful when cooking (see else).
+			//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
+			if (CVarMobileAllowLandScapeInstance.GetValueOnAnyThread() != 0) {
+				if (ClusterPlatformData.LoadFromDDC(NewSourceHash, this)) {
 
-			COOK_STAT(auto Timer = LandscapeCookStats::UsageStats.TimeSyncWork());
-			if (PlatformData.LoadFromDDC(NewSourceHash, this))
-			{
-				COOK_STAT(Timer.AddHit(PlatformData.GetPlatformDataSize()));
+				}
+				else {
+					GeneratePlatformClusterData();
+					ClusterPlatformData.SaveToDDC(NewSourceHash, this);
+				}
 			}
-			else
-			{
-				GeneratePlatformVertexData(TargetPlatform);
-				PlatformData.SaveToDDC(NewSourceHash, this);
-				COOK_STAT(Timer.AddMiss(PlatformData.GetPlatformDataSize()));
+			else {
+				COOK_STAT(auto Timer = LandscapeCookStats::UsageStats.TimeSyncWork());
+				if (PlatformData.LoadFromDDC(NewSourceHash, this))
+				{
+					COOK_STAT(Timer.AddHit(PlatformData.GetPlatformDataSize()));
+				}
+				else
+				{
+					GeneratePlatformVertexData(TargetPlatform);
+					PlatformData.SaveToDDC(NewSourceHash, this);
+					COOK_STAT(Timer.AddMiss(PlatformData.GetPlatformDataSize()));
+				}
 			}
 		}
 		else
 		{
 			// When not cooking (e.g. mobile preview) DDC data isn't sufficient to 
 			// display correctly, so the platform vertex data must be regenerated.
-
-			GeneratePlatformVertexData(TargetPlatform);
+			//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
+			if (CVarMobileAllowLandScapeInstance.GetValueOnAnyThread() != 0) {
+				GeneratePlatformClusterData();
+			}
+			else {
+				GeneratePlatformVertexData(TargetPlatform);
+			}
+			//@StarLight code - END LandScapeInstance, Added by yanjianhong
 		}
 	}
 
@@ -416,7 +441,6 @@ void ULandscapeComponent::Serialize(FArchive& Ar)
 		TArray<UTexture2D*> BackupWeightmapTextures;
 
 		//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-		//保存高度图
 		if (CVarMobileAllowLandScapeInstance.GetValueOnAnyThread() == 0) {
 			Exchange(HeightmapTexture, BackupHeightmapTexture);
 		}
@@ -540,11 +564,22 @@ void ULandscapeComponent::Serialize(FArchive& Ar)
 		// Saving for cooking path
 		if (bCookedMobileData)
 		{
-			if (Ar.IsCooking())
-			{
-				check(PlatformData.HasValidPlatformData());
+			//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
+			if (CVarMobileAllowLandScapeInstance.GetValueOnAnyThread() != 0) {
+				if (Ar.IsCooking())
+				{
+					check(ClusterPlatformData.UnCompressedClusterLandscapeData.Num() != 0);
+				}
+				Ar << ClusterPlatformData;
 			}
-			Ar << PlatformData;
+			else {
+				if (Ar.IsCooking())
+				{
+					check(PlatformData.HasValidPlatformData());
+				}
+				Ar << PlatformData;
+			}
+			//@StarLight code - END LandScapeInstance, Added by yanjianhong
 		}
 	}
 #endif
@@ -552,7 +587,12 @@ void ULandscapeComponent::Serialize(FArchive& Ar)
 #if WITH_EDITOR
 	if (Ar.GetPortFlags() & PPF_DuplicateForPIE)
 	{
-		Ar << PlatformData;
+		if (CVarMobileAllowLandScapeInstance.GetValueOnAnyThread() != 0) {
+			Ar << ClusterPlatformData;
+		}
+		else {
+			Ar << PlatformData;
+		}
 	}
 #endif
 }
@@ -3395,6 +3435,62 @@ void FLandscapeComponentDerivedData::SaveToDDC(const FGuid& StateId, UObject* Co
 	check(CompressedLandscapeData.Num() > 0);
 	GetDerivedDataCacheRef().Put(*GetDDCKeyString(StateId), CompressedLandscapeData, Component->GetPathName());
 }
+
+//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
+
+// Generate a new guid to force a recache of all landscape derived data
+#define LANDSCAPE_FULLCLUSTER_DERIVEDDATA_VER			TEXT("89D752865B0642E89CC8A5A2FED808A4")
+
+FString FLandscapeComponentClusterDeriveData::GetDDCKeyString(const FGuid& StateId)
+{
+	return FDerivedDataCacheInterface::BuildCacheKey(TEXT("LS_CLUSTER_FULL"), LANDSCAPE_FULLCLUSTER_DERIVEDDATA_VER, *StateId.ToString());
+}
+
+void FLandscapeComponentClusterDeriveData::InitializeFromUncompressedClusterData(const TArray<uint8>& UncompressedData) {
+
+	//#TODO: Compression?
+	//int32 UncompressedSize = UncompressedData.Num() * UncompressedData.GetTypeSize();
+
+	//TArray<uint8> TempCompressedMemory;
+	//// Compressed can be slightly larger than uncompressed
+	//TempCompressedMemory.Empty(UncompressedSize * 4 / 3);
+	//TempCompressedMemory.AddUninitialized(UncompressedSize * 4 / 3);
+	//int32 CompressedSize = TempCompressedMemory.Num() * TempCompressedMemory.GetTypeSize();
+
+	//verify(FCompression::CompressMemory(
+	//	NAME_Zlib,
+	//	TempCompressedMemory.GetData(),
+	//	CompressedSize,
+	//	UncompressedData.GetData(),
+	//	UncompressedSize,
+	//	COMPRESS_BiasMemory));
+
+	//// Note: change LANDSCAPE_FULL_DERIVEDDATA_VER when modifying the serialization layout
+	//FMemoryWriter FinalArchive(CompressedClusterLandscapeData, true);
+	//FinalArchive << UncompressedSize;
+	//FinalArchive << CompressedSize;
+	//FinalArchive.Serialize(TempCompressedMemory.GetData(), CompressedSize);
+}
+
+
+FArchive& operator<<(FArchive& Ar, FLandscapeComponentClusterDeriveData& Data)
+{
+	return Ar << Data.UnCompressedClusterLandscapeData;
+}
+
+bool FLandscapeComponentClusterDeriveData::LoadFromDDC(const FGuid& StateId, UObject* Component)
+{
+	return GetDerivedDataCacheRef().GetSynchronous(*GetDDCKeyString(StateId), UnCompressedClusterLandscapeData, Component->GetPathName());
+}
+
+void FLandscapeComponentClusterDeriveData::SaveToDDC(const FGuid& StateId, UObject* Component)
+{
+	check(UnCompressedClusterLandscapeData.Num() > 0);
+	GetDerivedDataCacheRef().Put(*GetDDCKeyString(StateId), UnCompressedClusterLandscapeData, Component->GetPathName());
+}
+
+//@StarLight code - END LandScapeInstance, Added by yanjianhong
+
 
 #if WITH_EDITOR
 void LandscapeMaterialsParameterValuesGetter(FStaticParameterSet& OutStaticParameterSet, UMaterialInstance* Material)
