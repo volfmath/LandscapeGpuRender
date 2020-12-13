@@ -713,7 +713,7 @@ FMaterialPixelParameters GetMaterialPixelParameters(FVertexFactoryInterpolantsVS
 	Result.LightmapUVs = LightmapUVs;
 #endif
 
-#if USE_MOBILE_INSTANCE
+#if USE_MOBILE_INSTANCE && PIXELSHADER
 	//#TODO: 使用高度图获取法线, WeightMap不再压缩3层
 	Result.LayerWeights.xy = Texture2DSample(ComponentClusterParameters.NormalmapTexture, ComponentClusterParameters.NormalmapTextureSampler, Interpolants.WeightMapTexCoord).rg;
 	Result.LayerWeights.z = saturate(ComponentClusterParameters.BlendableLayerMask.z - dot(Result.LayerWeights.xy, ComponentClusterParameters.BlendableLayerMask.xy));

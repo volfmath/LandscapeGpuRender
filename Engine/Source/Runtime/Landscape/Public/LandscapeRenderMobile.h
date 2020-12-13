@@ -184,7 +184,7 @@ struct FLandscapeClusterBatchElementParams
 
 	const FReadBuffer* ClusterInstanceDataBuffer;
 	const FReadBuffer* ComponentLODBuffer;
-	TArray<uint32> InstanceOffsetContainer;
+	//TArray<uint32> InstanceOffsetContainer;
 };
 
 //Per ClusterVertexData
@@ -298,7 +298,6 @@ public:
 		uint8 MipLevel
 	);
 
-	
 	
 	//Debug Function
 	void RenderOnlyBox(FPrimitiveDrawInterface* PDI, const FBoxSphereBounds& InBounds) const;
