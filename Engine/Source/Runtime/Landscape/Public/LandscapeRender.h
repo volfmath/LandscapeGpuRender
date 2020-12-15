@@ -26,6 +26,7 @@ LandscapeRender.h: New terrain rendering
 #include "PrimitiveViewRelevance.h"
 #include "PrimitiveSceneProxy.h"
 #include "StaticMeshResources.h"
+#include "Landscape.h"
 
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
 extern TAutoConsoleVariable<int32> CVarMobileAllowLandScapeInstance;
@@ -374,6 +375,7 @@ public:
 
 	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
 	bool bUseInstanceLandscape;
+	bool bUseVirtualTexutre;
 	uint32 NumClusterLOD;
 	class FLandscapeClusterVertexBuffer* ClusterVertexBuffer;
 	TArray<FIndexBuffer*> ClusterIndexBuffers;
@@ -920,13 +922,13 @@ struct FLandscapeRenderSystem
 	void UpdateCluterGPUBuffer();
 
 	//#TODO: 改为位运算
-	uint32 GetClusterLinearIndex(const FIntPoint ComponentBase, const FIntPoint ClusterLocalBase) {
+	FORCEINLINE uint32 GetClusterLinearIndex(const FIntPoint ComponentBase, const FIntPoint ClusterLocalBase) const{
 		uint32 BlockOffset = (ComponentBase.Y * ComponentTotalSize.X + ComponentBase.X) * PerComponentClusterSize * PerComponentClusterSize;
 		uint32 LocalOffset = ClusterLocalBase.Y * PerComponentClusterSize + ClusterLocalBase.X;
 		return BlockOffset + LocalOffset;
 	}
 
-	uint32 GetClusterLinearIndex(const FIntPoint ClusterGlobalBase) {
+	uint32 GetClusterLinearIndex(const FIntPoint ClusterGlobalBase) const noexcept {
 		uint32 ClusterBlockX = ClusterGlobalBase.X / PerComponentClusterSize;
 		uint32 ClusterBlockY = ClusterGlobalBase.Y / PerComponentClusterSize * ComponentTotalSize.X;
 		uint32 BlockOffset = (ClusterBlockX + ClusterBlockY)* PerComponentClusterSize * PerComponentClusterSize;
@@ -935,7 +937,7 @@ struct FLandscapeRenderSystem
 	}
 
 
-	FIntPoint GetClusteGlobalBase(const FIntPoint ComponentBase, const FIntPoint ClusterLocalBase) {
+	FORCEINLINE FIntPoint GetClusteGlobalBase(const FIntPoint ComponentBase, const FIntPoint ClusterLocalBase) {
 		return FIntPoint(ComponentBase * PerComponentClusterSize + ClusterLocalBase);
 	}
 
@@ -1245,6 +1247,34 @@ public:
 	virtual void CreateRenderThreadResources() override;
 	virtual void DestroyRenderThreadResources() override;
 	virtual void OnLevelAddedToWorld() override;
+
+	//@StarLight code - BEGIN New VT function for Landscape, Added by zhuyule
+
+	UTexture2D* WholeWeightmap;
+
+	virtual bool IsLandscapeProxy() const  override { return true; }
+
+	virtual class UMaterialInterface* GetMaterialInstance(int32 ElementIndex) const
+	{
+		return AvailableMaterials[ElementIndex];
+	}
+
+	virtual class UTexture* GetTexture(int32 ElementIndex) const
+	{
+		return WholeWeightmap;
+	}
+
+	virtual const class USceneComponent* GetComponent() const
+	{
+		return LandscapeComponent;
+	}
+
+	virtual FVector4 GetSpecialValue() const
+	{
+		int32 LandscapeResolution = GetLandscapeComponent()->GetLandscapeActor()->GetBoundingRect().Size().X;
+		return FVector4(LandscapeResolution, 0, 0, 0);
+	}
+	//@StarLight code - END   New VT function for Landscape, Added by zhuyule
 	
 	friend class ULandscapeComponent;
 	friend class FLandscapeVertexFactoryVertexShaderParameters;

@@ -285,7 +285,7 @@ void ULandscapeComponent::CheckGenerateLandscapePlatformData(bool bIsCooking, co
 	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
 	bool bMissingVertexData;
 	if (CVarMobileAllowLandScapeInstance.GetValueOnAnyThread() != 0) {
-		bMissingVertexData = !ClusterPlatformData.HasValidPlatformData();
+		bMissingVertexData = !ClusterPlatformData.HasValidPlatformData() || !PlatformData.HasValidPlatformData();
 	}
 	else {
 		bMissingVertexData = !PlatformData.HasValidPlatformData();
@@ -311,18 +311,17 @@ void ULandscapeComponent::CheckGenerateLandscapePlatformData(bool bIsCooking, co
 					ClusterPlatformData.SaveToDDC(NewSourceHash, this);
 				}
 			}
-			else {
-				COOK_STAT(auto Timer = LandscapeCookStats::UsageStats.TimeSyncWork());
-				if (PlatformData.LoadFromDDC(NewSourceHash, this))
-				{
-					COOK_STAT(Timer.AddHit(PlatformData.GetPlatformDataSize()));
-				}
-				else
-				{
-					GeneratePlatformVertexData(TargetPlatform);
-					PlatformData.SaveToDDC(NewSourceHash, this);
-					COOK_STAT(Timer.AddMiss(PlatformData.GetPlatformDataSize()));
-				}
+
+			COOK_STAT(auto Timer = LandscapeCookStats::UsageStats.TimeSyncWork());
+			if (PlatformData.LoadFromDDC(NewSourceHash, this))
+			{
+				COOK_STAT(Timer.AddHit(PlatformData.GetPlatformDataSize()));
+			}
+			else
+			{
+				GeneratePlatformVertexData(TargetPlatform);
+				PlatformData.SaveToDDC(NewSourceHash, this);
+				COOK_STAT(Timer.AddMiss(PlatformData.GetPlatformDataSize()));
 			}
 		}
 		else
@@ -333,9 +332,9 @@ void ULandscapeComponent::CheckGenerateLandscapePlatformData(bool bIsCooking, co
 			if (CVarMobileAllowLandScapeInstance.GetValueOnAnyThread() != 0) {
 				GeneratePlatformClusterData();
 			}
-			else {
-				GeneratePlatformVertexData(TargetPlatform);
-			}
+
+			GeneratePlatformVertexData(TargetPlatform);
+
 			//@StarLight code - END LandScapeInstance, Added by yanjianhong
 		}
 	}
@@ -569,8 +568,10 @@ void ULandscapeComponent::Serialize(FArchive& Ar)
 				if (Ar.IsCooking())
 				{
 					check(ClusterPlatformData.UnCompressedClusterLandscapeData.Num() != 0);
+					check(PlatformData.HasValidPlatformData());
 				}
 				Ar << ClusterPlatformData;
+				Ar << PlatformData;
 			}
 			else {
 				if (Ar.IsCooking())
@@ -589,6 +590,7 @@ void ULandscapeComponent::Serialize(FArchive& Ar)
 	{
 		if (CVarMobileAllowLandScapeInstance.GetValueOnAnyThread() != 0) {
 			Ar << ClusterPlatformData;
+			Ar << PlatformData;
 		}
 		else {
 			Ar << PlatformData;
@@ -2112,6 +2114,10 @@ void ALandscape::PostLoad()
 #if WITH_EDITOR
 void ALandscapeProxy::OnFeatureLevelChanged(ERHIFeatureLevel::Type NewFeatureLevel)
 {
+	//@StarLight code - BEGIN Merge All Component's Weightmap to One Weightmap, Added by zhuyule
+	GenerateWeightmap();
+	//@StarLight code - END Merge All Component's Weightmap to One Weightmap, Added by zhuyule
+
 	FlushGrassComponents();
 
 	UpdateAllComponentMaterialInstances();
@@ -2525,6 +2531,23 @@ void ALandscapeProxy::PostLoad()
 FIntPoint ALandscapeProxy::GetSectionBaseOffset() const
 {
 	return LandscapeSectionOffset;
+}
+
+FIntRect ALandscapeProxy::GetBoundingRect() const
+{
+	if (LandscapeComponents.Num() > 0)
+	{
+		FIntRect Rect(MAX_int32, MAX_int32, MIN_int32, MIN_int32);
+		for (int32 CompIdx = 0; CompIdx < LandscapeComponents.Num(); CompIdx++)
+		{
+			Rect.Include(LandscapeComponents[CompIdx]->GetSectionBase());
+		}
+		Rect.Max += FIntPoint(ComponentSizeQuads, ComponentSizeQuads);
+		Rect -= LandscapeSectionOffset;
+		return Rect;
+	}
+
+	return FIntRect();
 }
 
 #if WITH_EDITOR
@@ -3439,11 +3462,11 @@ void FLandscapeComponentDerivedData::SaveToDDC(const FGuid& StateId, UObject* Co
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
 
 // Generate a new guid to force a recache of all landscape derived data
-#define LANDSCAPE_FULLCLUSTER_DERIVEDDATA_VER			TEXT("89D752865B0642E89CC8A5A2FED808A4")
+#define LANDSCAPE_FULLCLUSTER_DERIVEDDATA_VER			TEXT("060431eb128244019f9239c07ce38b44")
 
 FString FLandscapeComponentClusterDeriveData::GetDDCKeyString(const FGuid& StateId)
 {
-	return FDerivedDataCacheInterface::BuildCacheKey(TEXT("LS_CLUSTER_FULL"), LANDSCAPE_FULLCLUSTER_DERIVEDDATA_VER, *StateId.ToString());
+	return FDerivedDataCacheInterface::BuildCacheKey(TEXT("LS_CLUSTER_DATA"), LANDSCAPE_FULLCLUSTER_DERIVEDDATA_VER, *StateId.ToString());
 }
 
 void FLandscapeComponentClusterDeriveData::InitializeFromUncompressedClusterData(const TArray<uint8>& UncompressedData) {

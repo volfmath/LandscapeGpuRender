@@ -13,6 +13,8 @@ LandscapeRenderMobile.h: Mobile landscape rendering
 #include "LandscapeRender.h"
 #include "Runtime/Landscape/Private/LandscapePrivate.h"
 
+class FLandscapeComponentSceneProxyInstanceMobile;
+
 #define LANDSCAPE_MAX_ES_LOD_COMP	2
 #define LANDSCAPE_MAX_ES_LOD		6
 
@@ -74,6 +76,10 @@ private:
 	FDataType MobileData; 
 
 	friend class FLandscapeComponentSceneProxyMobile;
+
+//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
+	friend class FLandscapeComponentSceneProxyInstanceMobile;
+//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
 };
 
 //
@@ -154,8 +160,6 @@ public:
 
 
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong---------------------------------------------------------------
-
-class FLandscapeComponentSceneProxyInstanceMobile;
 
 struct FLandscapeClusterBatchElementParams
 {
@@ -276,7 +280,7 @@ public:
 	virtual void InitRHI() override;
 };
 
-class FLandscapeComponentSceneProxyInstanceMobile : public FLandscapeComponentSceneProxy {
+class FLandscapeComponentSceneProxyInstanceMobile final : public FLandscapeComponentSceneProxy {
 public:
 	SIZE_T GetTypeHash() const override;
 	FLandscapeComponentSceneProxyInstanceMobile(ULandscapeComponent* InComponent);
@@ -301,19 +305,23 @@ public:
 	
 	//Debug Function
 	void RenderOnlyBox(FPrimitiveDrawInterface* PDI, const FBoxSphereBounds& InBounds) const;
+	void InitClusterRes();
 
 public:
-	//[Resource Manager]
-	TUniformBuffer<FLandscapeComponentClusterUniformBuffer> ComponentClusterUniformBuffer;
-	FLandscapeClusterBatchElementParams ComponentBatchUserData; 
+	//[Resource AutoRelease]
+	FLandscapeClusterBatchElementParams ComponentBatchUserData;
 	TArray<TArray<FLandscapeRenderSystem::FClusterInstanceData>> LodInstanceDataSparseArray; //存储InstanceData的稀疏结构,需要压缩到ClusterInstanceData_CPU
 	FIntPoint ComponentTotalSize;
 	uint32 ComponenLinearStartIndex;
+	TSharedPtr<FLandscapeMobileClusterRenderData, ESPMode::ThreadSafe> MobileClusterRenderData;
+	TSharedPtr<FLandscapeMobileRenderData, ESPMode::ThreadSafe> MobileRenderData;
+
+	//[Resource Manager]
+	TUniformBuffer<FLandscapeComponentClusterUniformBuffer> ComponentClusterUniformBuffer;
+
 
 	//[Resource ref]
 	FLandscapeRenderSystem* ClusterRenderSystem;
-	TSharedPtr<FLandscapeMobileClusterRenderData, ESPMode::ThreadSafe> MobileClusterRenderData;
-
 	friend class FLandscapeInstanceVertexFactoryVSParameters;
 
 };

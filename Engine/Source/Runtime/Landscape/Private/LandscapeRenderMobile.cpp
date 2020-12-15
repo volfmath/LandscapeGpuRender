@@ -788,8 +788,9 @@ struct FLandscapeMobileClusterRenderData {
 
 FLandscapeComponentSceneProxyInstanceMobile::FLandscapeComponentSceneProxyInstanceMobile(ULandscapeComponent* InComponent)
 	: FLandscapeComponentSceneProxy(InComponent)
-	, ClusterRenderSystem(nullptr)
 	, MobileClusterRenderData(InComponent->ClusterPlatformData.GetRenderData())
+	, MobileRenderData(InComponent->PlatformData.GetRenderData())
+	, ClusterRenderSystem(nullptr)
 {
 
 	check(InComponent->MobileMaterialInterfaces.Num() > 0);
@@ -797,6 +798,9 @@ FLandscapeComponentSceneProxyInstanceMobile::FLandscapeComponentSceneProxyInstan
 
 	check(ComponentSizeQuads + NumSubsections >= FLandscapeClusterVertexBuffer::ClusterQuadSize);
 	check(FLandscapeClusterVertexBuffer::ClusterQuadSize > 8);
+
+	//原生代码存在内存泄漏, Mobile会为每个Proxy创建一个FixedGridVertexFactory
+	FixedGridVertexFactory = nullptr;
 
 	const uint32 PerComponentClusterSize = (ComponentSizeQuads + NumSubsections) / FLandscapeClusterVertexBuffer::ClusterQuadSize;
 
@@ -819,6 +823,8 @@ FLandscapeComponentSceneProxyInstanceMobile::FLandscapeComponentSceneProxyInstan
 
 FLandscapeComponentSceneProxyInstanceMobile::~FLandscapeComponentSceneProxyInstanceMobile() {
 	ComponentClusterUniformBuffer.ReleaseResource();
+
+	delete FixedGridVertexFactory;
 }
 
 SIZE_T FLandscapeComponentSceneProxyInstanceMobile::GetTypeHash() const {
@@ -836,8 +842,66 @@ void FLandscapeComponentSceneProxyInstanceMobile::CreateRenderThreadResources() 
 	if (IsComponentLevelVisible()){
 		//#TODO: 大部分内容不再需要,重新创建一个RenderSystem
 		RegisterNeighbors(this); 
-		ClusterRenderSystem = LandscapeRenderSystems.FindChecked(LandscapeKey);
 	}
+
+	auto FeatureLevel = GetScene().GetFeatureLevel();
+	//Initial VertexFactory, ClusterVertexBuffer and ClusterIndexBuffer has been created in sharedBuffers
+	{		
+		SharedBuffers = FLandscapeComponentSceneProxy::SharedBuffersMap.FindRef(SharedBuffersKey);
+		if (SharedBuffers == nullptr) {
+			//don't need SOC data
+			SharedBuffers = new FLandscapeSharedBuffers(SharedBuffersKey, SubsectionSizeQuads, NumSubsections, FeatureLevel, false, /*NumOcclusionVertices*/0);
+			FLandscapeComponentSceneProxy::SharedBuffersMap.Add(SharedBuffersKey, SharedBuffers);
+
+			check(SharedBuffers->ClusterVertexBuffer);
+			FLandscapeClusterVertexFactoryMobile* LandscapeVertexFactory = new FLandscapeClusterVertexFactoryMobile(FeatureLevel);
+			LandscapeVertexFactory->MobileData.PositionComponent = FVertexStreamComponent(SharedBuffers->ClusterVertexBuffer, 0, sizeof(FLandscapeClusterVertex), VET_UByte4N);
+			LandscapeVertexFactory->InitResource();
+			SharedBuffers->ClusterVertexFactory = LandscapeVertexFactory;
+		}
+		SharedBuffers->AddRef();
+	}
+	
+
+	//#TODO: Remove HeightInfo?
+	//Support Virtual Texture Render
+	{
+		if (UseVirtualTexturing(FeatureLevel))
+		{
+			MobileRenderData->VertexBuffer->InitResource();
+			FLandscapeFixedGridVertexFactoryMobile* LandscapeVertexFactory = new FLandscapeFixedGridVertexFactoryMobile(FeatureLevel);
+			LandscapeVertexFactory->MobileData.PositionComponent = FVertexStreamComponent(MobileRenderData->VertexBuffer, STRUCT_OFFSET(FLandscapeMobileVertex, Position), sizeof(FLandscapeMobileVertex), VET_UByte4N);
+			for (uint32 Index = 0; Index < LANDSCAPE_MAX_ES_LOD_COMP; ++Index){
+				LandscapeVertexFactory->MobileData.LODHeightsComponent.Add
+				(FVertexStreamComponent(MobileRenderData->VertexBuffer, STRUCT_OFFSET(FLandscapeMobileVertex, LODHeights) + sizeof(uint8) * 4 * Index, sizeof(FLandscapeMobileVertex), VET_UByte4N));
+			}
+			LandscapeVertexFactory->InitResource();
+			FixedGridVertexFactory = LandscapeVertexFactory;
+
+			// Assign LandscapeUniformShaderParameters
+			LandscapeUniformShaderParameters.InitResource();
+
+			// Create per Lod uniform buffers
+			LandscapeFixedGridUniformShaderParameters.AddDefaulted(MaxLOD + 1);
+			for (int32 LodIndex = 0; LodIndex <= MaxLOD; ++LodIndex)
+			{
+				LandscapeFixedGridUniformShaderParameters[LodIndex].InitResource();
+				FLandscapeFixedGridUniformShaderParameters Parameters;
+				Parameters.LodValues = FVector4(
+					LodIndex,
+					0.f,
+					(float)((SubsectionSizeVerts >> LodIndex) - 1),
+					1.f / (float)((SubsectionSizeVerts >> LodIndex) - 1));
+				LandscapeFixedGridUniformShaderParameters[LodIndex].SetContents(Parameters);
+			}
+		}
+	}
+}
+
+void FLandscapeComponentSceneProxyInstanceMobile::InitClusterRes() {
+
+	//Save RenderSystem
+	ClusterRenderSystem = LandscapeRenderSystems.FindChecked(LandscapeKey);
 
 	const auto NumClusterLod = FMath::CeilLogTwo(FLandscapeClusterVertexBuffer::ClusterQuadSize) + 1;
 	const auto NumSectionLod = FMath::CeilLogTwo(SubsectionSizeVerts);
@@ -879,7 +943,7 @@ void FLandscapeComponentSceneProxyInstanceMobile::CreateRenderThreadResources() 
 		//LOD1
 		CurrentScreenSizeRatio /= ScreenSizeRatioDivider;
 		ClusterLodSetting.LOD1ScreenSizeSquared = FMath::Square(CurrentScreenSizeRatio);
-		
+
 		//其他LOD衰减系数不相同
 		ScreenSizeRatioDivider = FMath::Max(LandscapeComponent->GetLandscapeProxy()->LODDistributionSetting, 1.01f);
 		ClusterLodSetting.LODOnePlusDistributionScalarSquared = FMath::Square(ScreenSizeRatioDivider);
@@ -891,25 +955,6 @@ void FLandscapeComponentSceneProxyInstanceMobile::CreateRenderThreadResources() 
 	}
 
 
-	//Initial VertexFactory, ClusterVertexBuffer and ClusterIndexBuffer has been created in sharedBuffers
-	{
-		auto FeatureLevel = GetScene().GetFeatureLevel();	
-		SharedBuffers = FLandscapeComponentSceneProxy::SharedBuffersMap.FindRef(SharedBuffersKey);
-		if (SharedBuffers == nullptr) {
-			//don't need SOC data
-			SharedBuffers = new FLandscapeSharedBuffers(SharedBuffersKey, SubsectionSizeQuads, NumSubsections, FeatureLevel, false, /*NumOcclusionVertices*/0);
-			FLandscapeComponentSceneProxy::SharedBuffersMap.Add(SharedBuffersKey, SharedBuffers);
-
-			check(SharedBuffers->ClusterVertexBuffer);
-			FLandscapeClusterVertexFactoryMobile* LandscapeVertexFactory = new FLandscapeClusterVertexFactoryMobile(FeatureLevel);
-			LandscapeVertexFactory->MobileData.PositionComponent = FVertexStreamComponent(SharedBuffers->ClusterVertexBuffer, 0, sizeof(FLandscapeClusterVertex), VET_UByte4N);
-			LandscapeVertexFactory->InitResource();
-			SharedBuffers->ClusterVertexFactory = LandscapeVertexFactory;
-		}
-		SharedBuffers->AddRef();
-	}
-	
-
 	//Initial UniformBuffer and BatchParameter
 	{
 		ComponentClusterUniformBuffer.InitResource(); //Content和GPUBuffer在内部是分开的(兼容Descript?)
@@ -919,16 +964,10 @@ void FLandscapeComponentSceneProxyInstanceMobile::CreateRenderThreadResources() 
 		ComponentBatchUserData.ComponentLODBuffer = &ClusterRenderSystem->ComponentLODValues_GPU;
 		//ComponentBatchUserData.InstanceOffsetContainer.AddZeroed(SharedBuffers->NumClusterLOD);
 
-		LodInstanceDataSparseArray.AddZeroed(SharedBuffers->NumClusterLOD);
+		LodInstanceDataSparseArray.AddZeroed(NumClusterLod);
 		for (auto& LodInstanceDataArray : LodInstanceDataSparseArray) {
 			LodInstanceDataArray.Empty(ClusterRenderSystem->PerComponentClusterSize * ClusterRenderSystem->PerComponentClusterSize);
 		}
-	}
-
-	//#TODO: VT
-	//Support Virtual Texture Render
-	{
-
 	}
 }
 
@@ -1056,9 +1095,6 @@ void FLandscapeComponentSceneProxyInstanceMobile::DrawStaticElements(FStaticPrim
 		return;
 	}
 
-	//暂时不支持VT
-	check(RuntimeVirtualTextureMaterialTypes.Num() == 0);
-
 	int32 TotalBatchCount = 1 + LastLOD - FirstLOD;
 	TotalBatchCount += (1 + LastVirtualTextureLOD - FirstVirtualTextureLOD) * RuntimeVirtualTextureMaterialTypes.Num();
 
@@ -1083,6 +1119,12 @@ void FLandscapeComponentSceneProxyInstanceMobile::DrawStaticElements(FStaticPrim
 
 
 void FLandscapeComponentSceneProxyInstanceMobile::OnTransformChanged() {
+
+	auto FeatureLevel = GetScene().GetFeatureLevel();
+	if (UseVirtualTexturing(FeatureLevel)) {
+		FLandscapeComponentSceneProxy::OnTransformChanged();
+	}
+
 
 	// Set Lightmap ScaleBias
 	int32 PatchExpandCountX = 0;

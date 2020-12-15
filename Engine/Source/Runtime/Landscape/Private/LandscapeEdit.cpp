@@ -401,6 +401,10 @@ void ULandscapeComponent::UpdateMaterialInstances_Internal(FMaterialUpdateContex
 				MaterialInstance->SetTextureParameterValueEditorOnly(FName(*FString::Printf(TEXT("Weightmap%d"), i)), WeightmapBaseTexture[i]);
 			}
 
+			//@StarLight code - BEGIN Merge All Component's Weightmap to One Weightmap, Added by zhuyule
+			MaterialInstance->SetTextureParameterValueEditorOnly(FName(*FString::Printf(TEXT("VirtualTextureWeightmap%d"), 0)), GetLandscapeProxy()->WholeWeightmap);
+			//@StarLight code - END   Merge All Component's Weightmap to One Weightmap, Added by zhuyule
+
 			// Set the heightmap, if needed.
 			if (BaseHeightmap)
 			{
@@ -3290,23 +3294,6 @@ bool ALandscapeProxy::ExportToRawMesh(int32 InExportLOD, FMeshDescription& OutRa
 	return OutRawMesh.Polygons().Num() > 0;
 }
 
-
-FIntRect ALandscapeProxy::GetBoundingRect() const
-{
-	if (LandscapeComponents.Num() > 0)
-	{
-		FIntRect Rect(MAX_int32, MAX_int32, MIN_int32, MIN_int32);
-		for (int32 CompIdx = 0; CompIdx < LandscapeComponents.Num(); CompIdx++)
-		{
-			Rect.Include(LandscapeComponents[CompIdx]->GetSectionBase());
-		}
-		Rect.Max += FIntPoint(ComponentSizeQuads, ComponentSizeQuads);
-		Rect -= LandscapeSectionOffset;
-		return Rect;
-	}
-
-	return FIntRect();
-}
 
 bool ALandscape::HasAllComponent()
 {
@@ -6213,6 +6200,10 @@ void ULandscapeComponent::GeneratePlatformPixelData()
 				NewMobileMaterialInstance->SetTextureParameterValue(FName(*FString::Printf(TEXT("Weightmap%d"), TextureIdx)), MobileWeightmapTextures[TextureIdx]);
 			}
 
+			//@StarLight code - BEGIN Merge All Component's Weightmap to One Weightmap, Added by zhuyule
+			NewMobileMaterialInstance->SetTextureParameterValue(FName(*FString::Printf(TEXT("VirtualTextureWeightmap%d"), 0)), GetLandscapeProxy()->WholeWeightmap);
+			//@StarLight code - END   Merge All Component's Weightmap to One Weightmap, Added by zhuyule
+
 			MobileMaterialInterfaces.Add(NewMobileMaterialInstance);
 		}
 	}
@@ -6269,6 +6260,10 @@ void ULandscapeComponent::GeneratePlatformPixelData()
 			{
 				NewMobileMaterialInstance->SetTextureParameterValueEditorOnly(FName(*FString::Printf(TEXT("Weightmap%d"), TextureIdx)), MobileWeightmapTextures[TextureIdx]);
 			}
+
+			//@StarLight code - BEGIN Merge All Component's Weightmap to One Weightmap, Added by zhuyule
+			NewMobileMaterialInstance->SetTextureParameterValueEditorOnly(FName(*FString::Printf(TEXT("VirtualTextureWeightmap%d"), 0)), GetLandscapeProxy()->WholeWeightmap);
+			//@StarLight code - END   Merge All Component's Weightmap to One Weightmap, Added by zhuyule
 
 			NewMobileMaterialInstance->PostEditChange();
 
@@ -6919,6 +6914,112 @@ UTexture2D* ALandscapeProxy::CreateLandscapeTexture(int32 InSizeX, int32 InSizeY
 
 	return NewTexture;
 }
+
+//@StarLight code - BEGIN Merge All Component's Weightmap to One Weightmap, Added by zhuyule
+void ALandscapeProxy::GenerateWeightmap()
+{
+	int32 ComponentCount = LandscapeComponents.Num();
+
+	if (ComponentCount > 0)
+	{
+		ULandscapeComponent* FirstLandscape = LandscapeComponents[0];
+		if (FirstLandscape != nullptr)
+		{
+			int32 TileWeightmapSize = (FirstLandscape->SubsectionSizeQuads + 1) * FirstLandscape->NumSubsections;
+			int32 WeightmapSize = FMath::FloorToInt(FMath::Sqrt(ComponentCount)) * TileWeightmapSize;
+
+			WholeWeightmap = CreateLandscapeTexture(WeightmapSize, WeightmapSize, TEXTUREGROUP_Terrain_Weightmap, TSF_BGRA8, nullptr, false);
+			WholeWeightmap->NeverStream = true;
+
+			ETextureSourceFormat Format = WholeWeightmap->Source.GetFormat();
+			int32 SizeU = WholeWeightmap->Source.GetSizeX();
+			int32 SizeV = WholeWeightmap->Source.GetSizeY();
+
+			uint8 MaxMip = FMath::CeilLogTwo(TileWeightmapSize) + 1;
+
+			WholeWeightmap->Source.Init2DWithMipChain(SizeU, SizeV, Format);
+			int32 NumMips = WholeWeightmap->Source.GetNumMips();
+			for (int32 MipIndex = 0; MipIndex < NumMips; ++MipIndex)
+			{
+				uint8* MipData = WholeWeightmap->Source.LockMip(MipIndex);
+				FMemory::Memzero(MipData, WholeWeightmap->Source.CalcMipSize(MipIndex));
+				WholeWeightmap->Source.UnlockMip(MipIndex);
+			}
+
+			WeightmapInfos.Empty();
+
+			TSet<FName> LayerNames;
+			GetAllMobileRelevantLayerNames(LayerNames, GetLandscapeMaterial()->GetMaterial());
+
+			FLandscapeTextureDataInterface LandscapeData;
+			for (int32 Index = 0; Index < ComponentCount; Index++)
+			{
+				ULandscapeComponent* LandscapeComponent = LandscapeComponents[Index];
+				if (LandscapeComponent != nullptr)
+				{
+					FIntPoint ComponentBase = LandscapeComponent->GetSectionBase() / LandscapeComponent->ComponentSizeQuads;
+
+					TArray<FWeightmapLayerAllocationInfo>& ComponentWeightmapLayerAllocations = LandscapeComponent->GetWeightmapLayerAllocations(false);
+
+					int32 LayerIndex = 0;
+					FWeightmapInfo WeightmapInfo;
+					WeightmapInfo.ComponentX = ComponentBase.X;
+					WeightmapInfo.ComponentY = ComponentBase.Y;
+					
+					FIntPoint Start = FIntPoint(ComponentBase.Y, ComponentBase.X) * TileWeightmapSize;
+					FIntPoint End = (FIntPoint(ComponentBase.Y, ComponentBase.X) + FIntPoint(1, 1)) * TileWeightmapSize;
+
+					int32 ValidLayerNum = 0;
+					for (FName LayerName : LayerNames)
+					{
+						if (ValidLayerNum > 4)
+						{
+							break;
+						}
+
+						for (auto& Allocation : ComponentWeightmapLayerAllocations)
+						{
+							if (Allocation.GetLayerName() == LayerName)
+							{
+								WeightmapInfo.LayerIndexs[ValidLayerNum] = ValidLayerNum;
+
+								LandscapeData.CopyTextureFromWeightmap(WholeWeightmap, ValidLayerNum, LandscapeComponent, Allocation.LayerInfo, Start, End, MaxMip);
+							}
+						}
+						ValidLayerNum += 1;
+					}
+					//for (auto& Allocation : ComponentWeightmapLayerAllocations)
+					//{
+					//	if (ValidLayerNum > 4)
+					//	{
+					//		break;
+					//	}
+					//	//if (!Allocation.LayerInfo->bNoWeightBlend)
+					//	{
+					//		WeightmapInfo.LayerIndexs[ValidLayerNum] = LayerIndex;
+
+					//		LandscapeData.CopyTextureFromWeightmap(WholeWeightmap, ValidLayerNum, LandscapeComponent, Allocation.LayerInfo, Start, End, MaxMip);
+					//		ValidLayerNum += 1;
+					//	}
+					//	LayerIndex++;
+					//}
+
+					WeightmapInfos.Add(WeightmapInfo);
+				}
+			}
+			WholeWeightmap->PostEditChange();
+		}
+
+		for (ULandscapeComponent* Component : LandscapeComponents)
+		{
+			if (Component != nullptr)
+			{
+				Component->GeneratePlatformPixelData();
+			}
+		}
+	}
+}
+//@StarLight code - END Merge All Component's Weightmap to One Weightmap, Added by zhuyule
 
 UTexture2D* ALandscapeProxy::CreateLandscapeToolTexture(int32 InSizeX, int32 InSizeY, TextureGroup InLODGroup, ETextureSourceFormat InFormat) const
 {

@@ -158,7 +158,6 @@ float CalcVertLOD(float2 Componentxy, float LodValue)
  **/
 float4 GetLodValues(uint ComponentIndex)
 {
-//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
 #if FIXED_GRID 
 	// Fixed grid has fixed Lod
 	return LandscapeFixedGrid.LodValues;
@@ -171,7 +170,6 @@ float4 GetLodValues(uint ComponentIndex)
 	float LodSubSectionSizeQuads = (float)((LandscapeParameters.SubsectionSizeVerts >> Lod) - 1);
 	return float4(Lod, 0, LodSubSectionSizeQuads, rcp(LodSubSectionSizeQuads));
 #endif
-//@StarLight code - END LandScapeInstance, Added by yanjianhong
 }
 
 /**
@@ -191,8 +189,7 @@ float2 GetLodBias(uint ComponentIndex)
 
 float2 GetSectionTessellationFalloff(uint ComponentIndex)
 {
-//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-#if FIXED_GRID || USE_MOBILE_INSTANCE
+#if FIXED_GRID
 	// Fixed grid doesn't support tessellation
 	return 0;
 #else
@@ -200,7 +197,6 @@ float2 GetSectionTessellationFalloff(uint ComponentIndex)
 		LandscapeContinuousLODParameters.SectionTessellationFalloffC[ComponentIndex],
 		LandscapeContinuousLODParameters.SectionTessellationFalloffK[ComponentIndex]);
 #endif
-//@StarLight code - END LandScapeInstance, Added by yanjianhong
 }
 
 /* Get current Lod for this section instance. */
@@ -247,7 +243,6 @@ float4 GetNeighborSectionLod(uint ComponentIndex)
 	return float4(NeighborLod[0], NeighborLod[1], NeighborLod[2], NeighborLod[3]);
 #endif
 }
-
 
 /** Calculate fractional render LOD for a subsection. */
 float CalcLOD(uint ComponentIndex, float2 xyLocalToSubsection, float2 Subsection)
@@ -876,11 +871,8 @@ FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput In
 	float MorphAlpha = LODCalculated - LodValue;
 
 #if USE_MOBILE_INSTANCE
-	
-	//计算实际的LOD与顶点对应LOD的位置
     float2 ActualLODCoordsInt = floor(Intermediates.InputPosition.xy * exp2(LodIndex - LodValue));
     float InvLODScaleFactor = pow(2, -LodValue);
-	
 #elif FEATURE_LEVEL >= FEATURE_LEVEL_SM4
 	float2 ActualLODCoordsInt = floor(Intermediates.InputPosition.xy * pow(2, -(LodValue - Intermediates.LodValues.x)));
 	float InvLODScaleFactor = pow(2, -LodValue);

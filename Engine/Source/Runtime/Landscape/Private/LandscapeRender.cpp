@@ -750,7 +750,7 @@ void FLandscapeRenderSystem::RegisterEntity(FLandscapeComponentSceneProxy* Scene
 		//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
 		ResizeAndMoveTo(SceneProxy->ComponentBase, FIntPoint(1, 1));
 
-		//#TODO: 新RenderSystem可忽略,当前开启bUseInstanceLandscape
+		//#TODO: 新RenderSystem可忽�?,当前开启bUseInstanceLandscape
 		if (!bUseInstanceLandscape) {
 			RecreateBuffers();
 		}
@@ -763,7 +763,7 @@ void FLandscapeRenderSystem::RegisterEntity(FLandscapeComponentSceneProxy* Scene
 	SetSceneProxy(SceneProxy->ComponentBase, SceneProxy);
 
 	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-	//#TODO: NewRenderSystem
+	//#TODO: Remove
 	if (bUseInstanceLandscape) {
 		uint32 CurComponentClusterSize = (SceneProxy->ComponentSizeQuads + SceneProxy->NumSubsections) / FLandscapeClusterVertexBuffer::ClusterQuadSize;
 		check(PerComponentClusterSize == CurComponentClusterSize);
@@ -1044,20 +1044,11 @@ void FLandscapeRenderSystem::InitialClusterBaseAndBound(FLandscapeComponentScene
 
 	auto InstanceProxy = static_cast<FLandscapeComponentSceneProxyInstanceMobile*>(SceneProxy);
 	for (uint32 ClusterOffsetY = 0; ClusterOffsetY < PerComponentClusterSize; ++ClusterOffsetY) {
-		//边缘最大顶点值
-		//uint32 CollapseValueY = ClusterOffsetY == PerComponentClusterSize - 1 ? 
-		//	FLandscapeClusterVertexBuffer::ClusterQuadSize - SceneProxy->NumSubsections : 
-		//	FLandscapeClusterVertexBuffer::ClusterQuadSize;
 
 		for (uint32 ClusterOffsetX = 0; ClusterOffsetX < PerComponentClusterSize; ++ClusterOffsetX) {
 
 			uint32 ClusterLinearIndex = GetClusterLinearIndex(SceneProxy->ComponentBase, FIntPoint(ClusterOffsetX, ClusterOffsetY));
 			FIntPoint ClusterGlobalBase = GetClusteGlobalBase(SceneProxy->ComponentBase, FIntPoint(ClusterOffsetX, ClusterOffsetY));
-
-			//每到一个Component边缘就要记录
-			//uint32 CollapseValueX = ClusterOffsetX == PerComponentClusterSize - 1 ?
-			//	FLandscapeClusterVertexBuffer::ClusterQuadSize - SceneProxy->NumSubsections :
-			//	FLandscapeClusterVertexBuffer::ClusterQuadSize;
 
 			ClusterBaseData[ClusterLinearIndex] = FClusterInstanceData(ClusterGlobalBase/*, FIntPoint(CollapseValueX, CollapseValueY)*/);
 		}
@@ -1131,7 +1122,7 @@ void FLandscapeRenderSystem::ComputeClusterPerViewTask(const FVector& ViewOrigin
 		float FractionalLOD;
 
 		ComponentLodInt[ComponentLinearIndex] = GetClusterLODFromScreenSize(ClusterLODSetting, MeshScreenSizeSquared, LODScale * LODScale, FractionalLOD);
-		ComponentLODValues_CPU[ComponentLinearIndex].ComponentLod = FractionalLOD; //要保证最小LOD大于等于TextureStreaming的等级
+		ComponentLODValues_CPU[ComponentLinearIndex].ComponentLod = FractionalLOD; //要保证最小LOD大于等于TextureStreaming的等�?
 		ComponentLODValues_CPU[ComponentLinearIndex].ComponentLodBias = ComponentLODBias;
 	}
 }
@@ -1632,6 +1623,8 @@ FLandscapeComponentSceneProxy::FLandscapeComponentSceneProxy(ULandscapeComponent
 
 			MaterialHasTessellationEnabled.Add(HasTessellationEnabled);
 		}
+
+		WholeWeightmap = LandscapeComponent->GetLandscapeActor()->WholeWeightmap;
 	}
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST) || (UE_BUILD_SHIPPING && WITH_EDITOR)
@@ -2046,7 +2039,7 @@ FPrimitiveViewRelevance FLandscapeComponentSceneProxy::GetViewRelevance(const FS
 #endif
 		!IsStaticPathAvailable() || 
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-	    (FeatureLevel == ERHIFeatureLevel::ES3_1) && CVarMobileAllowLandScapeInstance.GetValueOnRenderThread() != 0
+	    (FeatureLevel == ERHIFeatureLevel::ES3_1) && (CVarMobileAllowLandScapeInstance.GetValueOnRenderThread() != 0)
 //@StarLight code - END LandScapeInstance, Added by yanjianhong
 		)
 	{
@@ -4144,6 +4137,7 @@ FLandscapeSharedBuffers::FLandscapeSharedBuffers(const int32 InSharedBuffersKey,
 	, bUse32BitIndices(false)
 	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
 	, bUseInstanceLandscape(false)
+	, bUseVirtualTexutre(false)
 	, NumClusterLOD(FMath::CeilLogTwo(FLandscapeClusterVertexBuffer::ClusterQuadSize) + 1)
 	, ClusterVertexBuffer(nullptr)
 	, ClusterVertexFactory(nullptr)
@@ -4154,14 +4148,34 @@ FLandscapeSharedBuffers::FLandscapeSharedBuffers(const int32 InSharedBuffersKey,
 {
 	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
 	bUseInstanceLandscape = (InFeatureLevel == ERHIFeatureLevel::ES3_1) && CVarMobileAllowLandScapeInstance.GetValueOnRenderThread() != 0;
+	bUseVirtualTexutre = UseVirtualTexturing(InFeatureLevel);
 
 	if (bUseInstanceLandscape) {
 		ClusterVertexBuffer = new FLandscapeClusterVertexBuffer();
-		//退化到Quad为1
+		//退化到Quad�?1
 		check(ClusterIndexBuffers.Num() == 0);
 		static_assert(FLandscapeClusterVertexBuffer::ClusterQuadSize * FLandscapeClusterVertexBuffer::ClusterQuadSize * 6 < 0x10000, "");
 		ClusterIndexBuffers.AddZeroed(NumClusterLOD);
 		CreateClusterIndexBuffers<uint16>();
+		
+		if (bUseVirtualTexutre) {
+			IndexBuffers = new FIndexBuffer * [NumIndexBuffers];
+			FMemory::Memzero(IndexBuffers, sizeof(FIndexBuffer*) * NumIndexBuffers);
+			IndexRanges = new FLandscapeIndexRanges[NumIndexBuffers]();
+
+			NumVertices = FMath::Square(SubsectionSizeVerts) * FMath::Square(NumSubsections);
+			// See if we need to use 16 or 32-bit index buffers
+			if (NumVertices > 65535)
+			{
+				bUse32BitIndices = true;
+				CreateIndexBuffers<uint32>(InFeatureLevel, bRequiresAdjacencyInformation);
+			}
+			else
+			{
+				CreateIndexBuffers<uint16>(InFeatureLevel, bRequiresAdjacencyInformation);
+			}
+		}
+
 	}
 	else {
 		NumVertices = FMath::Square(SubsectionSizeVerts) * FMath::Square(NumSubsections);
@@ -4219,6 +4233,16 @@ FLandscapeSharedBuffers::~FLandscapeSharedBuffers()
 		}
 		delete ClusterVertexBuffer;
 		delete ClusterVertexFactory;
+
+		if (bUseVirtualTexutre) {
+			for (int32 i = 0; i < NumIndexBuffers; i++)
+			{
+				IndexBuffers[i]->ReleaseResource();
+				delete IndexBuffers[i];
+			}
+			delete[] IndexBuffers;
+			delete[] IndexRanges;
+		}
 	}
 	else {
 		delete VertexBuffer;
@@ -4781,8 +4805,18 @@ public:
 				{
 					return (bIsGrassShaderType || bIsRuntimeVirtualTextureShaderType) && FMaterialResource::ShouldCache(Platform, ShaderType, VertexFactoryType);
 				}
-			}
+			}		
 		}
+		//@StarLight code - BEGIN New VT function, Added by zhuyule
+		else
+		{			
+			bool bIsRuntimeLandscapeVirtualTextureShaderType = Algo::Find(GetRuntimeLandscapeVirtualTextureShaderTypes(), ShaderType->GetFName()) != nullptr;
+			if (bIsRuntimeLandscapeVirtualTextureShaderType)
+			{
+				return FMaterialResource::ShouldCache(Platform, ShaderType, VertexFactoryType);
+			}			
+		}
+		//@StarLight code - BEGIN New VT function, Added by zhuyule
 
 		return false;
 	}
@@ -5078,6 +5112,19 @@ public:
 		};
 		return ShaderTypes;
 	}
+
+	//@StarLight code - BEGIN New VT function, Added by zhuyule
+	static const TArray<FName>& GetRuntimeLandscapeVirtualTextureShaderTypes()
+	{
+		static const TArray<FName> ShaderTypes =
+		{
+			FName(TEXT("FShader_LandscapeVirtualTextureMaterialDraw_PS")),
+			FName(TEXT("FShader_LandscapeVirtualTextureMaterialDraw_VS")),
+		};
+
+		return ShaderTypes;
+	}
+	//@StarLight code - END   New VT function, Added by zhuyule
 };
 
 FMaterialResource* ULandscapeMaterialInstanceConstant::AllocatePermutationResource()
@@ -5436,11 +5483,10 @@ void FLandscapeNeighborInfo::RegisterNeighbors(FLandscapeComponentSceneProxy* Sc
 	check(IsInRenderingThread());
 	if (!bRegistered)
 	{
+		bool bUseInstanceLandscape = (SceneProxy->GetScene().GetFeatureLevel() == ERHIFeatureLevel::ES3_1) && CVarMobileAllowLandScapeInstance.GetValueOnRenderThread() != 0;
 		if (!SharedSceneProxyMap.Find(LandscapeKey))
 		{
 			//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-			bool bUseInstanceLandscape = (SceneProxy->GetScene().GetFeatureLevel() == ERHIFeatureLevel::ES3_1) && CVarMobileAllowLandScapeInstance.GetValueOnRenderThread() != 0;
-
 			if (bUseInstanceLandscape) {
 				//#TODO: 直接计算
 				uint32 PerComponentClusterSize = (SceneProxy->ComponentSizeQuads + SceneProxy->NumSubsections) / FLandscapeClusterVertexBuffer::ClusterQuadSize;
@@ -5505,6 +5551,13 @@ void FLandscapeNeighborInfo::RegisterNeighbors(FLandscapeComponentSceneProxy* Sc
 				FLandscapeRenderSystem& RenderSystem = *LandscapeRenderSystems.FindChecked(LandscapeKey);
 				RenderSystem.RegisterEntity(SceneProxy);
 			}
+
+			//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
+			if (bUseInstanceLandscape) {
+				FLandscapeComponentSceneProxyInstanceMobile* ClusterProxy = static_cast<FLandscapeComponentSceneProxyInstanceMobile*>(SceneProxy);
+				ClusterProxy->InitClusterRes(); 
+			}
+			//@StarLight code - END LandScapeInstance, Added by yanjianhong
 		}
 		else
 		{
