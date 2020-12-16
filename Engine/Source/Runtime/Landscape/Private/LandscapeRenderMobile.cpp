@@ -684,23 +684,16 @@ public:
 	{
 		SCOPE_CYCLE_COUNTER(STAT_LandscapeVFDrawTimeVS);
 
-		//检查有地方用到?
-		check(!TexCoordOffsetParameter.IsBound());
-
 		const FLandscapeClusterBatchElementParams* BatchElementParams = (const FLandscapeClusterBatchElementParams*)BatchElement.UserData;
 
 		//UniformBuffer is MutilFrame Resource
 		ShaderBindings.Add(Shader->GetUniformBufferParameter<FLandscapeComponentClusterUniformBuffer>(), *BatchElementParams->LandscapeComponentClusterUniformBuffer);
-		
-		//Update与Bind是分开的,Bind开销是比较小的
-		/*ShaderBindings.Add(InstanceOffset, BatchElementParams->InstanceOffsetContainer[static_cast<uint32>(BatchElement.InstancedLODIndex)]);*/
 		ShaderBindings.Add(ClusterInstanceDataBuffer, BatchElementParams->ClusterInstanceDataBuffer->SRV);
 		ShaderBindings.Add(ComponentLODBuffer, BatchElementParams->ComponentLODBuffer->SRV);
 	}
 
 protected:
 	LAYOUT_FIELD(FShaderParameter, TexCoordOffsetParameter);
-	/*LAYOUT_FIELD(FShaderParameter, InstanceOffset)*/
 	LAYOUT_FIELD(FShaderResourceParameter, ClusterInstanceDataBuffer)
 	LAYOUT_FIELD(FShaderResourceParameter, ComponentLODBuffer)
 };
@@ -925,15 +918,13 @@ void FLandscapeComponentSceneProxyInstanceMobile::InitClusterRes() {
 	{
 		//面积递减系数为ScreenSizeRatioDivider
 		check(HeightmapTexture != nullptr && HeightmapTexture->Resource != nullptr);
-
-		//#TODO: Remove
 		uint32 SectionMaxLod = NumSectionLod - 1;
 		const uint32 FirstMip = ((FTexture2DResource*)HeightmapTexture->Resource)->GetCurrentFirstMip();
 		check(SectionMaxLod >= FirstMip);
 
 		const uint32 LastClusterLOD = FMath::Min(NumClusterLod - 1, SectionMaxLod);
 
-		//处理LOD0,单独参数
+		//LOD0
 		float ScreenSizeRatioDivider = FMath::Max(LandscapeComponent->GetLandscapeProxy()->LOD0DistributionSetting, 1.01f);
 		float CurrentScreenSizeRatio = LandscapeComponent->GetLandscapeProxy()->LOD0ScreenSize;
 		FLandscapeRenderSystem::FClusterLODSetting& ClusterLodSetting = ClusterRenderSystem->ClusterLODSetting;
@@ -944,10 +935,9 @@ void FLandscapeComponentSceneProxyInstanceMobile::InitClusterRes() {
 		CurrentScreenSizeRatio /= ScreenSizeRatioDivider;
 		ClusterLodSetting.LOD1ScreenSizeSquared = FMath::Square(CurrentScreenSizeRatio);
 
-		//其他LOD衰减系数不相同
+		//Other Lod
 		ScreenSizeRatioDivider = FMath::Max(LandscapeComponent->GetLandscapeProxy()->LODDistributionSetting, 1.01f);
 		ClusterLodSetting.LODOnePlusDistributionScalarSquared = FMath::Square(ScreenSizeRatioDivider);
-
 		for (uint32 i = 1; i < NumClusterLod; ++i) {
 			CurrentScreenSizeRatio /= ScreenSizeRatioDivider;
 		}
@@ -962,12 +952,6 @@ void FLandscapeComponentSceneProxyInstanceMobile::InitClusterRes() {
 		ComponentBatchUserData.LandscapeComponentClusterUniformBuffer = &ComponentClusterUniformBuffer;
 		ComponentBatchUserData.ClusterInstanceDataBuffer = &ClusterRenderSystem->ClusterInstanceData_GPU;
 		ComponentBatchUserData.ComponentLODBuffer = &ClusterRenderSystem->ComponentLODValues_GPU;
-		//ComponentBatchUserData.InstanceOffsetContainer.AddZeroed(SharedBuffers->NumClusterLOD);
-
-		LodInstanceDataSparseArray.AddZeroed(NumClusterLod);
-		for (auto& LodInstanceDataArray : LodInstanceDataSparseArray) {
-			LodInstanceDataArray.Empty(ClusterRenderSystem->PerComponentClusterSize * ClusterRenderSystem->PerComponentClusterSize);
-		}
 	}
 }
 
@@ -984,64 +968,46 @@ void FLandscapeComponentSceneProxyInstanceMobile::GetDynamicMeshElements(const T
 	check(Views.Num() == 1);
 	const FSceneView* View = Views[0];
 
-	//InstanceId -------> ClusterInstanceLinearIndex -------> GlobalClusterBase -------> LinearIndex
-	//ClusterInstanceLinear按Component划分
-
-	auto& NonConstLodInstanceDataSparseArray = const_cast<decltype(LodInstanceDataSparseArray)&>(LodInstanceDataSparseArray);
-	auto& NonConstComponentBatchUserData = const_cast<decltype(ComponentBatchUserData)&>(ComponentBatchUserData);
-	
+	uint32 VisibleInstanceNum = 0;
+	uint32 ComponentClusterSize = ClusterRenderSystem->PerComponentClusterSize;
+	uint32 ComponentLinearIndex = ClusterRenderSystem->GetComponentLinearIndex(ComponentBase);
+	uint32 ClusterLod = ClusterRenderSystem->ComponentLodInt[ComponentLinearIndex];
+	uint32 StartInstanceLinearIndexOffset = ComponenLinearStartIndex;
 
 	{
 		SCOPE_CYCLE_COUNTER(STAT_LandscapeClusterFrustumCull);
-		uint32 ComponentClusterSize = ClusterRenderSystem->PerComponentClusterSize;
-		uint32 ComponentLinearIndex = ClusterRenderSystem->GetComponentLinearIndex(ComponentBase);
-		uint32 ClusterLod = ClusterRenderSystem->ComponentLodInt[ComponentLinearIndex];
 		const TArray<FBoxSphereBounds>& RenderSystemClusterBoundsRef = ClusterRenderSystem->ClusterBounds[ClusterLod];
+		for (uint32 LocalClusterY = 0; LocalClusterY < ComponentClusterSize; ++LocalClusterY) {
+			for (uint32 LocalClusterX = 0; LocalClusterX < ComponentClusterSize; ++LocalClusterX) {
+				uint32 ClusterLinearIndex = ComponenLinearStartIndex + LocalClusterY * ComponentClusterSize + LocalClusterX;
+				const auto& ClusterBound = RenderSystemClusterBoundsRef[ClusterLinearIndex];
+				const bool bIsVisible = IntersectBox8Plane(ClusterBound.Origin, ClusterBound.BoxExtent, View->ViewFrustum.PermutedPlanes.GetData());
+				if (!bIsVisible) {
+					continue;
+				}
 
-		for (uint32 ComponentClusterIndex = 0; ComponentClusterIndex < ComponentClusterSize * ComponentClusterSize; ++ComponentClusterIndex) {
-			uint32 ClusterLinearIndex = ComponenLinearStartIndex + ComponentClusterIndex;
-			const auto& ClusterBound = RenderSystemClusterBoundsRef[ClusterLinearIndex];
-			const bool bIsVisible = IntersectBox8Plane(ClusterBound.Origin, ClusterBound.BoxExtent, View->ViewFrustum.PermutedPlanes.GetData());
-			if (!bIsVisible) {
-				continue;
-			}
+			#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+				if (ViewFamily.EngineShowFlags.Bounds) {
+					RenderOnlyBox(Collector.GetPDI(0), ClusterBound);
+				}
+			#endif
 
-			//#TODO: Debug Only
-			if (ViewFamily.EngineShowFlags.Bounds) {
-				RenderOnlyBox(Collector.GetPDI(0), ClusterBound);
-			}
-
-
-			//按照顺序将数据收集,同级LOD数据打包到一起
-			NonConstLodInstanceDataSparseArray[ClusterLod].Emplace(ClusterRenderSystem->ClusterBaseData[ClusterLinearIndex]);
-		}
-
-
-		//计算当前Component不同LOD的InstanceOffset
-		uint32 StartInstanceLinearIndexOffset = ComponenLinearStartIndex;
-		for (uint32 LodIndex = 0; LodIndex < static_cast<uint32>(NonConstLodInstanceDataSparseArray.Num()); ++LodIndex) {
-			//写入当前LOD的Cluster数据
-			//NonConstComponentBatchUserData.InstanceOffsetContainer[LodIndex] = StartInstanceLinearIndexOffset;
-			for (uint32 InstanceIndex = 0; InstanceIndex < static_cast<uint32>(NonConstLodInstanceDataSparseArray[LodIndex].Num()); ++InstanceIndex) {
-				ClusterRenderSystem->ClusterInstanceData_CPU[StartInstanceLinearIndexOffset] = NonConstLodInstanceDataSparseArray[LodIndex][InstanceIndex];
+				const auto GlobalClusterBase = ClusterRenderSystem->GetClusteGlobalBase(ComponentBase, FIntPoint(LocalClusterX, LocalClusterY));
+				ClusterRenderSystem->ClusterInstanceData_CPU[StartInstanceLinearIndexOffset] = GlobalClusterBase;
 				StartInstanceLinearIndexOffset += 1;
+				VisibleInstanceNum += 1;
 			}
 		}
 	}
 
-	for (uint32 CurLod = 0; CurLod < static_cast<uint32>(NonConstLodInstanceDataSparseArray.Num()); ++CurLod) {
-
-		if (NonConstLodInstanceDataSparseArray[CurLod].Num() == 0) {
-			continue;
-		}
-		const uint32 VisibleInstanceNum = NonConstLodInstanceDataSparseArray[CurLod].Num();
-
-		uint32 CurClusterQuadSize = FLandscapeClusterVertexBuffer::ClusterQuadSize >> CurLod;
+	if(VisibleInstanceNum > 0)
+	{
+		uint32 CurClusterQuadSize = FLandscapeClusterVertexBuffer::ClusterQuadSize >> ClusterLod;
 		uint32 CurClusterVertexSize = CurClusterQuadSize + 1;
 		UMaterialInterface* MaterialInterface = nullptr;
 
-		//#TODO: LOD材质下标可能溢出
-		int32 MaterialIndex = LODIndexToMaterialIndex[CurLod];
+		//check material index
+		int32 MaterialIndex = LODIndexToMaterialIndex[ClusterLod];
 		MaterialInterface = AvailableMaterials[MaterialIndex];
 		check(MaterialInterface != nullptr);
 
@@ -1057,7 +1023,7 @@ void FLandscapeComponentSceneProxyInstanceMobile::GetDynamicMeshElements(const T
 		MeshBatch.bUseForMaterial = true;
 		MeshBatch.Type = PT_TriangleList;
 		MeshBatch.DepthPriorityGroup = SDPG_World;
-		MeshBatch.LODIndex = CurLod; //not need
+		MeshBatch.LODIndex = ClusterLod; //not need
 		MeshBatch.bDitheredLODTransition = false;
 		MeshBatch.bCanApplyViewModeOverrides = true; //兼容WireFrame等
 		MeshBatch.bUseWireframeSelectionColoring = IsSelected(); //选中颜色
@@ -1067,25 +1033,19 @@ void FLandscapeComponentSceneProxyInstanceMobile::GetDynamicMeshElements(const T
 
 		BatchElement.UserData = &ComponentBatchUserData;
 		BatchElement.PrimitiveUniformBuffer = GetUniformBuffer();
-		BatchElement.IndexBuffer = SharedBuffers->ClusterIndexBuffers[CurLod];
+		BatchElement.IndexBuffer = SharedBuffers->ClusterIndexBuffers[ClusterLod];
 		BatchElement.NumPrimitives = CurClusterQuadSize * CurClusterQuadSize * 2u;
 		BatchElement.FirstIndex = 0;
 		BatchElement.MinVertexIndex = 0;
 		BatchElement.MaxVertexIndex = CurClusterVertexSize * CurClusterVertexSize - 1;
 		BatchElement.NumInstances = VisibleInstanceNum;
-		BatchElement.InstancedLODIndex = CurLod; //用来传递LOD
+		BatchElement.InstancedLODIndex = ClusterLod; //用来传递LOD
 
 		Collector.AddMesh(0, MeshBatch);
 	
-		//不需要考虑Hole
+		//No need to think about Hole
 		//ApplyMeshElementModifier(BatchElement, LODIndex);
 	}
-
-	//#TODO: 直接操作内存,不调用Reset
-	for (auto& LodInstanceDataArray : NonConstLodInstanceDataSparseArray) {
-		LodInstanceDataArray.Reset();
-	}
-
 }
 
 void FLandscapeComponentSceneProxyInstanceMobile::DrawStaticElements(FStaticPrimitiveDrawInterface* PDI) 
@@ -1224,11 +1184,10 @@ void FLandscapeComponentSceneProxyInstanceMobile::OnTransformChanged() {
 
 	ComponentClusterUniformBuffer.SetContents(LandscapeClusterParams);
 
-	//仅初始化时创建,不可能被注册
-	check(!bRegistered);
+	//Because Landscape inherits UPrimitiveComponent, it will not necessarily recreate Proxy when updating Transform
+	//check(!bRegistered);
 
-	//使用Dynamic渲染, 不用更新PrimitivesNeedingStaticMeshUpdate容器, 即不会重新CacheDrawCommand
-	// Recache mesh draw commands for changed uniform buffers
+	//Use Dynamic rendering, no need to update PrimitivesNeedingStaticMeshUpdate container
 	//GetScene().UpdateCachedRenderStates(this);
 }
 
