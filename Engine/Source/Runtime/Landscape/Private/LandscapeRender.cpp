@@ -761,16 +761,6 @@ void FLandscapeRenderSystem::RegisterEntity(FLandscapeComponentSceneProxy* Scene
 	SetSectionLODSettings(SceneProxy->ComponentBase, SceneProxy->LODSettings);
 	SetSectionOriginAndRadius(SceneProxy->ComponentBase, FVector4(SceneProxy->GetBounds().Origin, SceneProxy->GetBounds().SphereRadius));
 	SetSceneProxy(SceneProxy->ComponentBase, SceneProxy);
-
-	//@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-	//#TODO: Remove
-	if (bUseInstanceLandscape) {
-		uint32 CurComponentClusterSize = (SceneProxy->ComponentSizeQuads + SceneProxy->NumSubsections) / FLandscapeClusterVertexBuffer::ClusterQuadSize;
-		check(PerComponentClusterSize == CurComponentClusterSize);
-
-		InitialClusterBaseAndBound(SceneProxy);
-	}
-	//@StarLight code - END LandScapeInstance, Added by yanjianhong
 }
 
 void FLandscapeRenderSystem::UnregisterEntity(FLandscapeComponentSceneProxy* SceneProxy)
@@ -1040,22 +1030,6 @@ void FLandscapeRenderSystem::FetchHeightmapLODBiases()
 
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
 
-void FLandscapeRenderSystem::InitialClusterBaseAndBound(FLandscapeComponentSceneProxy* SceneProxy) {
-
-	auto InstanceProxy = static_cast<FLandscapeComponentSceneProxyInstanceMobile*>(SceneProxy);
-	for (uint32 ClusterOffsetY = 0; ClusterOffsetY < PerComponentClusterSize; ++ClusterOffsetY) {
-
-		for (uint32 ClusterOffsetX = 0; ClusterOffsetX < PerComponentClusterSize; ++ClusterOffsetX) {
-
-			uint32 ClusterLinearIndex = GetClusterLinearIndex(SceneProxy->ComponentBase, FIntPoint(ClusterOffsetX, ClusterOffsetY));
-			FIntPoint ClusterGlobalBase = GetClusteGlobalBase(SceneProxy->ComponentBase, FIntPoint(ClusterOffsetX, ClusterOffsetY));
-
-			ClusterBaseData[ClusterLinearIndex] = FClusterInstanceData(ClusterGlobalBase/*, FIntPoint(CollapseValueX, CollapseValueY)*/);
-		}
-	}
-}
-
-
 void FLandscapeRenderSystem::CreateAllClusterBuffers(const FGuid& InGuid) {
 
 	uint32 NumComponent = ComponentTotalSize.X * ComponentTotalSize.Y;
@@ -1067,7 +1041,6 @@ void FLandscapeRenderSystem::CreateAllClusterBuffers(const FGuid& InGuid) {
 		ClusterBounds[i].AddZeroed(NumCluster);
 	}
 
-	ClusterBaseData.AddZeroed(NumCluster);
 	ClusterInstanceData_GPU.Initialize(sizeof(FClusterInstanceData), NumCluster, PF_R16_UINT, BUF_Dynamic);
 	ClusterInstanceData_CPU.AddZeroed(NumCluster);
 
@@ -1623,8 +1596,6 @@ FLandscapeComponentSceneProxy::FLandscapeComponentSceneProxy(ULandscapeComponent
 
 			MaterialHasTessellationEnabled.Add(HasTessellationEnabled);
 		}
-
-		WholeWeightmap = LandscapeComponent->GetLandscapeActor()->WholeWeightmap;
 	}
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST) || (UE_BUILD_SHIPPING && WITH_EDITOR)
@@ -2039,7 +2010,7 @@ FPrimitiveViewRelevance FLandscapeComponentSceneProxy::GetViewRelevance(const FS
 #endif
 		!IsStaticPathAvailable() || 
 //@StarLight code - BEGIN LandScapeInstance, Added by yanjianhong
-	    (FeatureLevel == ERHIFeatureLevel::ES3_1) && (CVarMobileAllowLandScapeInstance.GetValueOnRenderThread() != 0)
+	   ( FeatureLevel == ERHIFeatureLevel::ES3_1 && CVarMobileAllowLandScapeInstance.GetValueOnRenderThread() != 0)
 //@StarLight code - END LandScapeInstance, Added by yanjianhong
 		)
 	{

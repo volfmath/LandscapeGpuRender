@@ -183,12 +183,10 @@ struct FLandscapeClusterBatchElementParams
 
 	}
 
-	//just ref
+	//[Resource ref]
 	const TUniformBuffer<FLandscapeComponentClusterUniformBuffer>* LandscapeComponentClusterUniformBuffer;
-
 	const FReadBuffer* ClusterInstanceDataBuffer;
 	const FReadBuffer* ComponentLODBuffer;
-	//TArray<uint32> InstanceOffsetContainer;
 };
 
 //Per ClusterVertexData
@@ -310,7 +308,6 @@ public:
 public:
 	//[Resource AutoRelease]
 	FLandscapeClusterBatchElementParams ComponentBatchUserData;
-	TArray<TArray<FLandscapeRenderSystem::FClusterInstanceData>> LodInstanceDataSparseArray; //存储InstanceData的稀疏结构,需要压缩到ClusterInstanceData_CPU
 	FIntPoint ComponentTotalSize;
 	uint32 ComponenLinearStartIndex;
 	TSharedPtr<FLandscapeMobileClusterRenderData, ESPMode::ThreadSafe> MobileClusterRenderData;

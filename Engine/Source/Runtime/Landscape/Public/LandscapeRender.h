@@ -706,7 +706,6 @@ struct FLandscapeRenderSystem
 	FClusterLODSetting ClusterLODSetting;
 	TSharedPtr<class FLandscapeClusterRendererViewExtension, ESPMode::ThreadSafe> LandscapeClusterViewExtension;
 	TArray<TArray<FBoxSphereBounds>> ClusterBounds;
-	TArray<FClusterInstanceData> ClusterBaseData;
 	TArray<FClusterInstanceData> ClusterInstanceData_CPU;
 	TArray<FComponentLodAndLodBiasData> ComponentLODValues_CPU;
 	TArray<uint8> ComponentLodInt; //For CPU use LOD without floating point conversion
@@ -915,14 +914,12 @@ struct FLandscapeRenderSystem
 
 	void ComputeClusterPerViewTask(const FVector& ViewOrigin, const FMatrix& ProjMatrix, float ViewLODDistanceFactor);
 
-	void InitialClusterBaseAndBound(FLandscapeComponentSceneProxy* SceneProxy);
-
 	void CreateAllClusterBuffers(const FGuid& InGuid);
 
 	void UpdateCluterGPUBuffer();
 
 	//#TODO: 改为位运算
-	FORCEINLINE uint32 GetClusterLinearIndex(const FIntPoint ComponentBase, const FIntPoint ClusterLocalBase) const{
+	FORCEINLINE uint32 GetClusterLinearIndex(const FIntPoint ComponentBase, const FIntPoint ClusterLocalBase) const noexcept{
 		uint32 BlockOffset = (ComponentBase.Y * ComponentTotalSize.X + ComponentBase.X) * PerComponentClusterSize * PerComponentClusterSize;
 		uint32 LocalOffset = ClusterLocalBase.Y * PerComponentClusterSize + ClusterLocalBase.X;
 		return BlockOffset + LocalOffset;
@@ -937,7 +934,7 @@ struct FLandscapeRenderSystem
 	}
 
 
-	FORCEINLINE FIntPoint GetClusteGlobalBase(const FIntPoint ComponentBase, const FIntPoint ClusterLocalBase) {
+	FORCEINLINE FIntPoint GetClusteGlobalBase(const FIntPoint ComponentBase, const FIntPoint ClusterLocalBase) const noexcept{
 		return FIntPoint(ComponentBase * PerComponentClusterSize + ClusterLocalBase);
 	}
 
