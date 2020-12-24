@@ -981,10 +981,22 @@ void FLandscapeComponentSceneProxyInstanceMobile::GetDynamicMeshElements(const T
 			for (uint32 LocalClusterX = 0; LocalClusterX < ComponentClusterSize; ++LocalClusterX) {
 				uint32 ClusterLinearIndex = ComponenLinearStartIndex + LocalClusterY * ComponentClusterSize + LocalClusterX;
 				const auto& ClusterBound = RenderSystemClusterBoundsRef[ClusterLinearIndex];
-				const bool bIsVisible = IntersectBox8Plane(ClusterBound.Origin, ClusterBound.BoxExtent, View->ViewFrustum.PermutedPlanes.GetData());
+				bool bIsVisible = false;
+			#if WITH_EDITOR
+				const bool bUseFastIntersect = View->ViewFrustum.PermutedPlanes.Num() == 8;
+				if (!bUseFastIntersect) {
+					bIsVisible = View->ViewFrustum.IntersectBox(ClusterBound.Origin, ClusterBound.BoxExtent);
+				}
+				else
+			#endif
+				{
+					bIsVisible = IntersectBox8Plane(ClusterBound.Origin, ClusterBound.BoxExtent, View->ViewFrustum.PermutedPlanes.GetData());
+				}
+
 				if (!bIsVisible) {
 					continue;
 				}
+
 
 			#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 				if (ViewFamily.EngineShowFlags.Bounds) {
