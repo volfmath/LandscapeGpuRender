@@ -2,6 +2,8 @@
 #include "CoreMinimal.h"
 #include "RHIUtilities.h"
 
+extern ENGINE_API TAutoConsoleVariable<int32> CVarMobileLandscapeGpuRender;
+
 struct FLandscapeSubmitData;
 
 struct FDrawIndirectCommandArgs_CPU {
@@ -48,9 +50,8 @@ struct FLandscapeGpuRenderData {
 	FIntPoint LandscapeComponentMin;
 	FIntPoint LandscapeComponentSize;
 
+	//[Resources Manager]
 	FRWBuffer IndirectDrawCommandBuffer_GPU;
 	FRWBufferStructured ClusterInputData_GPU;
 	FRWBuffer ClusterOutputData_GPU;
-
-
 };

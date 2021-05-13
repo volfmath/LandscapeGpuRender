@@ -1,6 +1,13 @@
 #include "LandscapeMobileGPURenderEngine.h"
 #include "LandscapeMobileGPURender.h"
 
+ENGINE_API TAutoConsoleVariable<int32> CVarMobileLandscapeGpuRender(
+	TEXT("r.GpuDriven.LandscapeGpuRender"),
+	1,
+	TEXT("Enable GpuRender For Landscape"),
+	ECVF_Scalability
+);
+
 
 FLandscapeGpuRenderData::FLandscapeGpuRenderData() 
 	: bLandscapeDirty(false)
@@ -33,7 +40,7 @@ void FLandscapeGpuRenderData::UpdateAllGPUBuffer() {
 		IndirectDrawCommandBuffer_CPU.AddZeroed(/*FLandscapeClusterVertexBuffer::ClusterLod*/1);
 		for (int32 DrawElementIndex = 0; DrawElementIndex < IndirectDrawCommandBuffer_CPU.Num(); ++DrawElementIndex) {
 			auto& DrawCommandBuffer = IndirectDrawCommandBuffer_CPU[DrawElementIndex];
-			DrawCommandBuffer.IndexCount = FLandscapeClusterVertexBuffer::ClusterQuadSize * FLandscapeClusterVertexBuffer::ClusterQuadSize * 2 * 3;
+			DrawCommandBuffer.IndexCount = LandscapeGpuRenderParameter::ClusterQuadSize * LandscapeGpuRenderParameter::ClusterQuadSize * 2 * 3;
 			DrawCommandBuffer.InstanceCount = ClusterSizePerComponent * ClusterSizePerComponent * NumRegisterComponent;
 			DrawCommandBuffer.FirstIndex = 0;
 			DrawCommandBuffer.VertexOffset = 0;
