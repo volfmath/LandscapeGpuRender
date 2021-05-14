@@ -1,5 +1,6 @@
 #include "LandscapeMobileGPURender.h"
 #include "ProfilingDebugging/LoadTimeTracker.h"
+#include "MeshMaterialShader.h"
 
 
 //TMap<FMobileLandscapeGPURenderSystem::TSystemKey, FMobileLandscapeGPURenderSystem*> FMobileLandscapeGPURenderSystem::LandscapeGPURenderSystem_GameThread;
@@ -137,6 +138,19 @@ FLandscapeSubmitData FLandscapeSubmitData::CreateLandscapeSubmitData(ULandscapeC
 	return RetSubmitData;
 }
 
+//------------------------------------------------VertexFactory------------------------------------------------//
+bool FLandscapeGpuRenderVertexFactory::ShouldCompilePermutation(const FVertexFactoryShaderPermutationParameters& Parameters)
+{
+	return GetMaxSupportedFeatureLevel(Parameters.Platform) == ERHIFeatureLevel::ES3_1 &&
+		(Parameters.MaterialParameters.bIsUsedWithLandscape || Parameters.MaterialParameters.bIsSpecialEngineMaterial);
+}
+
+void FLandscapeGpuRenderVertexFactory::ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+{
+	FVertexFactory::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+	OutEnvironment.SetDefine(TEXT("NUM_VF_PACKED_INTERPOLANTS"), TEXT("1"));
+}
+
 FLandscapeClusterVertexBuffer::FLandscapeClusterVertexBuffer() {
 	INC_DWORD_STAT_BY(STAT_LandscapeVertexMem, LandscapeGpuRenderParameter::ClusterVertexDataSize);
 	InitResource();
@@ -170,71 +184,99 @@ void FLandscapeClusterVertexBuffer::InitRHI() {
 	RHIUnlockVertexBuffer(VertexBufferRHI);
 }
 
-FLandscapeGpuRenderProxyComponentSceneProxy::FLandscapeGpuRenderProxyComponentSceneProxy(ULandscapeGpuRenderProxyComponent* InComponent)
-	: FPrimitiveSceneProxy(InComponent)
-{
+//------------------------------------------------SceneProxy------------------------------------------------//
+SIZE_T FLandscapeGpuRenderProxyComponentSceneProxy::GetTypeHash() const{
+	static size_t UniquePointer;
+	return reinterpret_cast<size_t>(&UniquePointer);
+}
+
+void FLandscapeGpuRenderProxyComponentSceneProxy::ApplyWorldOffset(FVector InOffset) {
 	
 }
 
-void FLandscapeGpuRenderProxyComponentSceneProxy::DrawStaticElements(FStaticPrimitiveDrawInterface* PDI){
-	if (AvailableMaterials.Num() == 0){
+bool FLandscapeGpuRenderProxyComponentSceneProxy::CanBeOccluded() const {
+	return false; //hardware Occlusion Culling
+}
+
+void FLandscapeGpuRenderProxyComponentSceneProxy::GetLightRelevance(const FLightSceneProxy* LightSceneProxy, bool& bDynamic, bool& bRelevant, bool& bLightMapped, bool& bShadowMapped) const {
+	FPrimitiveSceneProxy::GetLightRelevance(LightSceneProxy, bDynamic, bRelevant, bLightMapped, bShadowMapped);
+}
+
+void FLandscapeGpuRenderProxyComponentSceneProxy::OnTransformChanged() {
+
+}
+
+void FLandscapeGpuRenderProxyComponentSceneProxy::CreateRenderThreadResources() {
+
+}
+
+void FLandscapeGpuRenderProxyComponentSceneProxy::DestroyRenderThreadResources() {
+
+}
+
+void FLandscapeGpuRenderProxyComponentSceneProxy::OnLevelAddedToWorld() {
+
+}
+
+FLandscapeGpuRenderProxyComponentSceneProxy::FLandscapeGpuRenderProxyComponentSceneProxy(ULandscapeGpuRenderProxyComponent* InComponent)
+	: FPrimitiveSceneProxy(InComponent)
+{
+	check(GetScene().GetFeatureLevel() == ERHIFeatureLevel::ES3_1);
+	AvailableMaterials.Append(InComponent->MobileMaterialInterfaces);
+}
+
+FPrimitiveViewRelevance FLandscapeGpuRenderProxyComponentSceneProxy::GetViewRelevance(const FSceneView* View) const {
+	FPrimitiveViewRelevance Result;
+	//const bool bCollisionView = (View->Family->EngineShowFlags.CollisionVisibility || View->Family->EngineShowFlags.CollisionPawn);
+	//Result.bDrawRelevance = (IsShown(View) || bCollisionView) && View->Family->EngineShowFlags.Landscape;
+	Result.bDrawRelevance = IsShown(View) && View->Family->EngineShowFlags.Landscape;
+	Result.bRenderInMainPass = ShouldRenderInMainPass();
+	Result.bRenderCustomDepth = ShouldRenderCustomDepth();
+	Result.bUsesLightingChannels = GetLightingChannelMask() != GetDefaultLightingChannelMask();
+	Result.bTranslucentSelfShadow = bCastVolumetricTranslucentShadow;
+	Result.bDynamicRelevance = true;
+	Result.bStaticRelevance = false;
+	Result.bShadowRelevance = IsShadowCast(View) && View->Family->EngineShowFlags.Landscape;
+	return Result;
+}
+
+void FLandscapeGpuRenderProxyComponentSceneProxy::GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const {
+	if (AvailableMaterials.Num() == 0) {
 		return;
 	}
 	check(AvailableMaterials.Num() != 0);
 	UMaterialInterface* MaterialInterface = AvailableMaterials[0];
 	check(MaterialInterface != nullptr);
 
-	// Based on the final material we selected, detect if it has tessellation
-	FMeshBatch MeshBatch;
-
-
-	MeshBatch.VertexFactory = VertexFactory;
-	MeshBatch.MaterialRenderProxy = MaterialInterface->GetRenderProxy();
-
-	MeshBatch.LCI = nullptr; //don't need to any bake info
-	MeshBatch.ReverseCulling = IsLocalToWorldDeterminantNegative();
-	MeshBatch.CastShadow = true; //
-	MeshBatch.bUseForDepthPass = true;
-	MeshBatch.bUseAsOccluder = ShouldUseAsOccluder() && GetScene().GetShadingPath() == EShadingPath::Deferred && !IsMovable();
-	MeshBatch.bUseForMaterial = true;
-	MeshBatch.Type = PT_TriangleList;
-	MeshBatch.DepthPriorityGroup = SDPG_World;
-	MeshBatch.LODIndex = LODIndex;
-	MeshBatch.bDitheredLODTransition = false;
-
-	// Combined batch element
-	FMeshBatchElement& BatchElement = MeshBatch.Elements[0];
-
-	FLandscapeBatchElementParams* BatchElementParams = new(OutStaticBatchParamArray) FLandscapeBatchElementParams;
-	BatchElementParams->LandscapeUniformShaderParametersResource = &LandscapeUniformShaderParameters;
-	BatchElementParams->SceneProxy = this;
-	BatchElementParams->CurrentLOD = LODIndex;
-
-	BatchElement.UserData = BatchElementParams;
-	BatchElement.PrimitiveUniformBuffer = GetUniformBuffer();
-	BatchElement.IndexBuffer = bCurrentRequiresAdjacencyInformation ? SharedBuffers->AdjacencyIndexBuffers->IndexBuffers[LODIndex] : SharedBuffers->IndexBuffers[LODIndex];
-	BatchElement.NumPrimitives = FMath::Square((SubsectionSizeVerts >> LODIndex) - 1) * FMath::Square(NumSubsections) * 2;
-	BatchElement.FirstIndex = 0;
-	BatchElement.MinVertexIndex = SharedBuffers->IndexRanges[LODIndex].MinIndexFull;
-	BatchElement.MaxVertexIndex = SharedBuffers->IndexRanges[LODIndex].MaxIndexFull;
-
-	// The default is overridden here only by mobile landscape to punch holes in the geometry
-	//ApplyMeshElementModifier(BatchElement, LODIndex);
-
-	int32 TotalBatchCount = 1 + LastLOD - FirstLOD;
-	TotalBatchCount += (1 + LastVirtualTextureLOD - FirstVirtualTextureLOD) * RuntimeVirtualTextureMaterialTypes.Num();
-
-	StaticBatchParamArray.Empty(TotalBatchCount);
-	PDI->ReserveMemoryForMeshes(TotalBatchCount);
-
-	//We no longer need the original Virtual Texture, use new algrithms
-	for (int32 LODIndex = FirstLOD; LODIndex <= LastLOD; LODIndex++){
+	for (int LodIndex = 0; LodIndex < LandscapeGpuRenderParameter::ClusterLod; ++LodIndex) {
 		FMeshBatch MeshBatch;
+		MeshBatch.VertexFactory = VertexFactory;
+		MeshBatch.MaterialRenderProxy = MaterialInterface->GetRenderProxy();
+		MeshBatch.LCI = nullptr; //don't need to any bake info
+		MeshBatch.ReverseCulling = IsLocalToWorldDeterminantNegative();
+		MeshBatch.CastShadow = true; //值来自于FPrimitiveFlagsCompact, 所以这里无所谓
+		MeshBatch.bUseForDepthPass = true;
+		MeshBatch.bUseAsOccluder = false;
+		MeshBatch.bUseForMaterial = true;
+		MeshBatch.Type = PT_TriangleList;
+		MeshBatch.DepthPriorityGroup = SDPG_World;
+		MeshBatch.LODIndex = LodIndex; //not need
+		MeshBatch.bDitheredLODTransition = false;
+		MeshBatch.bCanApplyViewModeOverrides = true; //兼容WireFrame等
+		//MeshBatch.bUseWireframeSelectionColoring = IsSelected(); //选中颜色
 
-		if (GetStaticMeshElement(LODIndex, false, false, MeshBatch, StaticBatchParamArray)){
-			PDI->DrawMesh(MeshBatch, LODIndex == FirstLOD ? FLT_MAX : (FMath::Sqrt(LODScreenRatioSquared[LODIndex]) * 2.0f));
-		}
+		// Combined batch element
+		FMeshBatchElement& BatchElement = MeshBatch.Elements[0];
+		BatchElement.UserData = &ComponentBatchUserData;
+		BatchElement.PrimitiveUniformBuffer = GetUniformBuffer();
+		BatchElement.IndexBuffer = SharedBuffers->ClusterIndexBuffers[ClusterLod];
+		BatchElement.NumPrimitives = 0; //Use indirect
+		BatchElement.FirstIndex = 0; //Use IndirectArgs don't need
+		BatchElement.MinVertexIndex = 0; //Use IndirectArgs don't need
+		BatchElement.MaxVertexIndex = 0; //Use IndirectArgs don't need
+		BatchElement.NumInstances = 0;  //Use IndirectArgs don't need
+		BatchElement.InstancedLODIndex = 0; //用来传递LOD, don't need
+
+		Collector.AddMesh(0, MeshBatch);
 	}
-
-	check(StaticBatchParamArray.Num() <= TotalBatchCount);
 }

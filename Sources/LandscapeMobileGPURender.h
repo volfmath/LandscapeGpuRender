@@ -11,13 +11,13 @@
 
 struct FLandscapeClusterVertex;
 
-BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeGpuRenderUniformBuffer, LANDSCAPE_API)
-SHADER_PARAMETER(FMatrix, LocalToWorldNoScaling)
-SHADER_PARAMETER_TEXTURE(Texture2D, HeightmapTexture)
-SHADER_PARAMETER_SAMPLER(SamplerState, HeightmapTextureSampler)
-SHADER_PARAMETER_TEXTURE(Texture2D, NormalmapTexture)
-SHADER_PARAMETER_SAMPLER(SamplerState, NormalmapTextureSampler)
-END_GLOBAL_SHADER_PARAMETER_STRUCT()
+//BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeGpuRenderUniformBuffer, LANDSCAPE_API)
+//SHADER_PARAMETER(FMatrix, LocalToWorldNoScaling)
+//SHADER_PARAMETER_TEXTURE(Texture2D, HeightmapTexture)
+//SHADER_PARAMETER_SAMPLER(SamplerState, HeightmapTextureSampler)
+//SHADER_PARAMETER_TEXTURE(Texture2D, NormalmapTexture)
+//SHADER_PARAMETER_SAMPLER(SamplerState, NormalmapTextureSampler)
+//END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 //Submit to landscape data
 struct FLandscapeSubmitData {
@@ -64,6 +64,50 @@ namespace LandscapeGpuRenderParameter {
 	static constexpr uint32 ClusterVertexDataSize = ClusterQuadSize * sizeof(FLandscapeClusterVertex);
 }
 
+class FLandscapeGpuRenderVertexFactory : public FVertexFactory
+{
+	DECLARE_VERTEX_FACTORY_TYPE(FLandscapeGpuRenderVertexFactory);
+
+	typedef FLandscapeVertexFactory Super;
+public:
+
+	struct FDataType : FLandscapeVertexFactory::FDataType
+	{
+		
+	};
+
+	FLandscapeGpuRenderVertexFactory(ERHIFeatureLevel::Type InFeatureLevel)
+		: FVertexFactory(InFeatureLevel)
+	{
+		
+	}
+
+	virtual ~FLandscapeGpuRenderVertexFactory(){
+		ReleaseResource();
+	}
+
+	/**
+	* Should we cache the material's shadertype on this platform with this vertex factory?
+	*/
+	static bool ShouldCompilePermutation(const FVertexFactoryShaderPermutationParameters& Parameters);
+
+	static void ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
+	// FRenderResource interface.
+	virtual void InitRHI() override;
+
+	/**
+	 * An implementation of the interface used by TSynchronizedResource to update the resource with new data from the game thread.
+	 */
+	void SetData(const FDataType& InData){
+		MobileData = InData;
+		UpdateRHI();
+	}
+
+private:
+	/** stream component data bound to this vertex factory */
+	FDataType MobileData;
+};
+
 class FLandscapeClusterVertexBuffer : public FVertexBuffer
 {
 public:
@@ -86,9 +130,8 @@ public:
 	FLandscapeGpuRenderProxyComponentSceneProxy(ULandscapeGpuRenderProxyComponent* InComponent);
 	// FPrimitiveSceneProxy interface.
 	virtual void ApplyWorldOffset(FVector InOffset) override;
-	virtual void DrawStaticElements(FStaticPrimitiveDrawInterface* PDI) override;
+	//virtual void DrawStaticElements(FStaticPrimitiveDrawInterface* PDI) override; assume all is dynamic
 	virtual void GetDynamicMeshElements(const TArray<const FSceneView*>& Views, const FSceneViewFamily& ViewFamily, uint32 VisibilityMap, FMeshElementCollector& Collector) const override;
-	virtual int32 CollectOccluderElements(FOccluderElementsCollector& Collector) const override;
 	virtual uint32 GetMemoryFootprint() const override { return(sizeof(*this) + GetAllocatedSize()); }
 	virtual FPrimitiveViewRelevance GetViewRelevance(const FSceneView* View) const override;
 	virtual bool CanBeOccluded() const override;
@@ -96,7 +139,7 @@ public:
 	virtual void OnTransformChanged() override;
 	virtual void CreateRenderThreadResources() override;
 	virtual void DestroyRenderThreadResources() override;
-	//virtual void OnLevelAddedToWorld() override;
+	virtual void OnLevelAddedToWorld() override;
 };
 
 

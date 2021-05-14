@@ -58,7 +58,6 @@ void FLandscapeGpuRenderData::UpdateAllGPUBuffer() {
 				int32 CalculateIndex = ClusterIndexX + ClusterIndexY * ClusterSizePerComponent;
 				ClusterOutputData_CPU[CalculateIndex].ClusterIndexX = (ClusterIndexX & 0xFF);
 				ClusterOutputData_CPU[CalculateIndex].ClusterIndexY = (ClusterIndexY & 0xFF);
-
 			}
 		}
 	}
