@@ -1,11 +1,12 @@
 #include "LandscapeGpuRenderProxyComponent.h"
 #include "LandscapeComponent.h"
 #include "LandscapeProxy.h"
+#include "LandscapeMobileGPURender.h"
 
 ULandscapeGpuRenderProxyComponent::ULandscapeGpuRenderProxyComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
-	, ProxyLocalBox(ForceInit)
 	, NumComponents(0)
+	, ProxyLocalBox(ForceInit)
 //#if WITH_EDITORONLY_DATA
 //	, CachedEditingLayerData(nullptr)
 //	, LayerUpdateFlagPerMode(0)
@@ -64,17 +65,23 @@ FBoxSphereBounds ULandscapeGpuRenderProxyComponent::CalcBounds(const FTransform&
 }
 
 FPrimitiveSceneProxy* ULandscapeGpuRenderProxyComponent::CreateSceneProxy() {
-	return nullptr;
+	return new FLandscapeGpuRenderProxyComponentSceneProxy(this);
 }
 
 void ULandscapeGpuRenderProxyComponent::Init(ULandscapeComponent* LandscapeComponent) {
+	NumComponents = 1; //Initial always 1
+
+	//Set LandscapeKey
+	LandscapeKey = LandscapeComponent->GetLandscapeProxy()->GetLandscapeGuid();
+
+	//Set BoundingBox
 	const auto& ComponentQuadBase = LandscapeComponent->GetSectionBase();
 	FVector ComponentMaxBox = FVector(LandscapeComponent->CachedLocalBox.Max.X + ComponentQuadBase.X, LandscapeComponent->CachedLocalBox.Max.Y + ComponentQuadBase.Y, LandscapeComponent->CachedLocalBox.Max.Z);
 	ProxyLocalBox = FBox(LandscapeComponent->CachedLocalBox.Min, ComponentMaxBox);
 	check(LandscapeComponent->CachedLocalBox.Min.X == 0 && LandscapeComponent->CachedLocalBox.Min.Y == 0);
-	NumComponents = 1; //Initial always 1
-
+	
 	//Save MaterialInsterface
+	check(LandscapeComponent->MobileMaterialInterfaces.Num() > 0);
 	MobileMaterialInterfaces.Reserve(LandscapeComponent->MobileMaterialInterfaces.Num());
 	for (int32 Index = 0; Index < LandscapeComponent->MobileMaterialInterfaces.Num(); ++Index) {
 		MobileMaterialInterfaces.Emplace(TWeakObjectPtr<UMaterialInterface>(LandscapeComponent->MobileMaterialInterfaces[Index]));

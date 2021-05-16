@@ -21,10 +21,13 @@ class ULandscapeGpuRenderProxyComponent : public UPrimitiveComponent
 
 public:
 	//[Don't Serialize]
+	uint32 NumComponents;
+
+	//[Don't Serialize]
 	FBox ProxyLocalBox;
 
 	//[Don't Serialize]
-	uint32 NumComponents;
+	FGuid LandscapeKey;
 
 	//[Don't Serialize]
 	TArray<TWeakObjectPtr<UMaterialInterface>> MobileMaterialInterfaces;

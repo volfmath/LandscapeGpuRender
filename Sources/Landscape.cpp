@@ -1522,9 +1522,7 @@ void ULandscapeComponent::OnRegister()
 			}
 		}
 		//@StarLight code - LandscapeGpuRender, Added by yanjianhong
-		if (CVarMobileLandscapeGpuRender.GetValueOnGameThread() != 0) {
-			FMobileLandscapeGPURenderSystem::RegisterGPURenderLandscapeEntity(this);
-		}
+		FMobileLandscapeGPURenderSystem_GameThread::RegisterGPURenderLandscapeEntity(this);
 		//@StarLight code - LandscapeGpuRender, Added by yanjianhong
 	}
 }
@@ -1540,9 +1538,7 @@ void ULandscapeComponent::OnUnregister()
 	if (GetLandscapeProxy())
 	{
 		//@StarLight code - LandscapeGpuRender, Added by yanjianhong
-		if (CVarMobileLandscapeGpuRender.GetValueOnGameThread() != 0) {
-			FMobileLandscapeGPURenderSystem::UnRegisterGPURenderLandscapeEntity(this);
-		}
+		FMobileLandscapeGPURenderSystem_GameThread::UnRegisterGPURenderLandscapeEntity(this);
 		//@StarLight code - LandscapeGpuRender, Added by yanjianhong
 
 		// Generate MID representing the MIC

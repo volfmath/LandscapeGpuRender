@@ -1,5 +1,6 @@
 #include "LandscapeMobileGPURenderEngine.h"
 #include "LandscapeMobileGPURender.h"
+#include "MobileGpuDriven.h"
 
 ENGINE_API TAutoConsoleVariable<int32> CVarMobileLandscapeGpuRender(
 	TEXT("r.GpuDriven.LandscapeGpuRender"),
@@ -8,8 +9,7 @@ ENGINE_API TAutoConsoleVariable<int32> CVarMobileLandscapeGpuRender(
 	ECVF_Scalability
 );
 
-
-FLandscapeGpuRenderData::FLandscapeGpuRenderData() 
+FLandscapeGpuRenderProxyComponent_RenderThread::FLandscapeGpuRenderProxyComponent_RenderThread()
 	: bLandscapeDirty(false)
 	, NumRegisterComponent(0)
 	, ClusterSizePerComponent(0)
@@ -19,13 +19,14 @@ FLandscapeGpuRenderData::FLandscapeGpuRenderData()
 
 }
 
-FLandscapeGpuRenderData::~FLandscapeGpuRenderData() {
+FLandscapeGpuRenderProxyComponent_RenderThread::~FLandscapeGpuRenderProxyComponent_RenderThread() {
+	check(NumRegisterComponent == 0);
 	IndirectDrawCommandBuffer_GPU.Release();
 	ClusterInputData_GPU.Release();
 	ClusterOutputData_GPU.Release();
 }
 
-void FLandscapeGpuRenderData::UpdateAllGPUBuffer() {
+void FLandscapeGpuRenderProxyComponent_RenderThread::UpdateAllGPUBuffer() {
 	check(IsInRenderingThread());
 	check(LandscapeComponentMin.X == 0 && LandscapeComponentMin.Y == 0);
 
@@ -47,9 +48,8 @@ void FLandscapeGpuRenderData::UpdateAllGPUBuffer() {
 			DrawCommandBuffer.FirstInstance = 0;
 		}
 
-
 		//ClusterOutoutBuffer, 临时写入out代码, 直接传给VS
-		TArray<FLandscapeClusterOutputData_GPU> ClusterOutputData_CPU;
+		TArray<FLandscapeClusterOutputData_CPU> ClusterOutputData_CPU;
 		//TArray<FLandscapeClusterInputData_CPU> CluterInputData_CPU;
 		ClusterOutputData_CPU.AddZeroed(ClusterSizePerComponent * ClusterSizePerComponent * LandscapeComponentSize.X * LandscapeComponentSize.Y);
 		//CluterInputData_CPU.AddZeroed(ClusterSizePerComponent * ClusterSizePerComponent * ClusterSize.X * ClusterSize.Y);
@@ -63,7 +63,7 @@ void FLandscapeGpuRenderData::UpdateAllGPUBuffer() {
 	}
 }
 
-void FLandscapeGpuRenderData::RegisterComponent(const FLandscapeSubmitData& SubmitToRenderThreadComponentData) {
+void FLandscapeGpuRenderProxyComponent_RenderThread::RegisterComponentData(const FLandscapeSubmitData& SubmitToRenderThreadComponentData) {
 	const FIntPoint& ComponentBase = SubmitToRenderThreadComponentData.ComponentBase;
 	if (ClusterSizePerComponent == 0) {
 		ClusterSizePerComponent = SubmitToRenderThreadComponentData.ClusterSizePerComponent;
@@ -88,11 +88,75 @@ void FLandscapeGpuRenderData::RegisterComponent(const FLandscapeSubmitData& Subm
 	MarkDirty();
 }
 
-void FLandscapeGpuRenderData::UnRegisterComponent() {
+void FLandscapeGpuRenderProxyComponent_RenderThread::UnRegisterComponentData() {
 	NumRegisterComponent -= 1;
 	MarkDirty();
 }
 
-void FLandscapeGpuRenderData::MarkDirty() {
+void FLandscapeGpuRenderProxyComponent_RenderThread::MarkDirty() {
 	bLandscapeDirty = true;
+}
+
+//------------------------------------------------SystemRenderThread------------------------------------------------//
+TMap<uint32, FMobileLandscapeGPURenderSystem_RenderThread*> FMobileLandscapeGPURenderSystem_RenderThread::LandscapeGPURenderSystem_RenderThread;
+
+FMobileLandscapeGPURenderSystem_RenderThread::FMobileLandscapeGPURenderSystem_RenderThread(/*uint32 NumComponents*/)
+//: NumComponents(0)
+	: NumAllRegisterComponents_RenderThread(0)
+{
+
+}
+
+FMobileLandscapeGPURenderSystem_RenderThread::~FMobileLandscapeGPURenderSystem_RenderThread() {
+	check(NumAllRegisterComponents_RenderThread == 0);
+}
+
+void FMobileLandscapeGPURenderSystem_RenderThread::RegisterGPURenderLandscapeEntity_RenderThread(const FLandscapeSubmitData& SubmitToRenderThreadComponentData) {
+	check(IsInRenderingThread());
+
+	FMobileLandscapeGPURenderSystem_RenderThread** FoundSystemPtr = LandscapeGPURenderSystem_RenderThread.Find(SubmitToRenderThreadComponentData.UniqueWorldId);
+	FMobileLandscapeGPURenderSystem_RenderThread* FoundSystem = FoundSystemPtr == nullptr
+		? LandscapeGPURenderSystem_RenderThread.Emplace(SubmitToRenderThreadComponentData.UniqueWorldId, new FMobileLandscapeGPURenderSystem_RenderThread())
+		: *FoundSystemPtr;
+
+	FLandscapeGpuRenderProxyComponent_RenderThread* RenderComponent = FoundSystem->LandscapeGpuRenderComponent_RenderThread.Find(SubmitToRenderThreadComponentData.LandscapeKey);
+	if (RenderComponent == nullptr) {
+		FLandscapeGpuRenderProxyComponent_RenderThread& EmplaceComponent = FoundSystem->LandscapeGpuRenderComponent_RenderThread.Emplace(
+			SubmitToRenderThreadComponentData.LandscapeKey, 
+			FLandscapeGpuRenderProxyComponent_RenderThread()
+		);
+		RenderComponent = &EmplaceComponent;
+	}
+	RenderComponent->RegisterComponentData(SubmitToRenderThreadComponentData);
+	FoundSystem->NumAllRegisterComponents_RenderThread += 1;
+}
+
+void FMobileLandscapeGPURenderSystem_RenderThread::UnRegisterGPURenderLandscapeEntity_RenderThread(const FLandscapeSubmitData& SubmitToRenderThreadComponentData) {
+	check(IsInRenderingThread());
+	FMobileLandscapeGPURenderSystem_RenderThread* FoundSystem = LandscapeGPURenderSystem_RenderThread.FindChecked(SubmitToRenderThreadComponentData.UniqueWorldId);
+	FLandscapeGpuRenderProxyComponent_RenderThread& RenderComponent = FoundSystem->LandscapeGpuRenderComponent_RenderThread.FindChecked(SubmitToRenderThreadComponentData.LandscapeKey);
+
+	//Release Component
+	RenderComponent.UnRegisterComponentData();
+	if (RenderComponent.NumRegisterComponent == 0) {
+		FoundSystem->LandscapeGpuRenderComponent_RenderThread.Remove(SubmitToRenderThreadComponentData.LandscapeKey);
+	}
+
+	//Release System
+	FoundSystem->NumAllRegisterComponents_RenderThread -= 1;
+	if (FoundSystem->NumAllRegisterComponents_RenderThread == 0) {
+		LandscapeGPURenderSystem_RenderThread.Remove(SubmitToRenderThreadComponentData.UniqueWorldId); //End of life of the system container
+		delete FoundSystem;
+	}
+}
+
+FMobileLandscapeGPURenderSystem_RenderThread* FMobileLandscapeGPURenderSystem_RenderThread::GetLandscapeGPURenderSystem_RenderThread(const uint32 UniqueWorldId) {
+	FMobileLandscapeGPURenderSystem_RenderThread* FoundSystem = LandscapeGPURenderSystem_RenderThread.FindChecked(UniqueWorldId);
+	return FoundSystem;
+}
+
+const FLandscapeGpuRenderProxyComponent_RenderThread& FMobileLandscapeGPURenderSystem_RenderThread::GetLandscapeGPURenderComponent_RenderThread(const uint32 UniqueWorldId, const FGuid& LandscapeKey) {
+	FMobileLandscapeGPURenderSystem_RenderThread* FoundSystem = LandscapeGPURenderSystem_RenderThread.FindChecked(UniqueWorldId);
+	const FLandscapeGpuRenderProxyComponent_RenderThread& FoundRenderData = FoundSystem->LandscapeGpuRenderComponent_RenderThread.FindChecked(LandscapeKey);
+	return FoundRenderData;
 }

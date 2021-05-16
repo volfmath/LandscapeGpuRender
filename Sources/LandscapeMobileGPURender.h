@@ -29,32 +29,28 @@ struct FLandscapeSubmitData {
 	FGuid LandscapeKey;
 };
 
-struct FMobileLandscapeGPURenderSystem {
-	FMobileLandscapeGPURenderSystem(/*uint32 NumComponents*/);
-	~FMobileLandscapeGPURenderSystem();
+struct FMobileLandscapeGPURenderSystem_GameThread {
+	FMobileLandscapeGPURenderSystem_GameThread(/*uint32 NumComponents*/);
+	~FMobileLandscapeGPURenderSystem_GameThread();
 	static void RegisterGPURenderLandscapeEntity(ULandscapeComponent* InstanceComponent);
 	static void UnRegisterGPURenderLandscapeEntity(ULandscapeComponent* InstanceComponent);
-	static void RegisterGPURenderLandscapeEntity_RenderThread(FMobileLandscapeGPURenderSystem* RenderSystem, const FLandscapeSubmitData& SubmitToRenderThreadComponentData);
-	static void UnRegisterGPURenderLandscapeEntity_RenderThread(const FLandscapeSubmitData& SubmitToRenderThreadComponentData); 
-	static TMap<uint32, FMobileLandscapeGPURenderSystem*> LandscapeGPURenderSystem_GameThread;
-	static TMap<uint32, FMobileLandscapeGPURenderSystem*> LandscapeGPURenderSystem_RenderThread;
-
+	static TMap<uint32, FMobileLandscapeGPURenderSystem_GameThread*> LandscapeGPURenderSystem_GameThread;
+	
 	//[GameThread]
 	uint32 NumAllRegisterComponents_GameThread; //the sum of the Entity numbers of all Landscapes, note that System may have multiple Landscapes
 	TMap<FGuid, ULandscapeGpuRenderProxyComponent*> LandscapeGpuRenderPeoxyComponens_GameThread; //Resources Manager
-
-	//[RenderThread]
-	uint32 NumAllRegisterComponents_RenderThread;
-	TMap<FGuid, FLandscapeGpuRenderData> LandscapeGpuRenderDataMap_RenderThread; //A System may have multiple Landscapes
 };
 
 //Per ClusterVertexData
 struct FLandscapeClusterVertex
 {
-	uint8 PositionX;
-	uint8 PositionY;
-	uint8 Blank_0; //Blank Data
-	uint8 Blank_1; //Blank Data
+	//uint8 PositionX;
+	//uint8 PositionY;
+	//uint8 Blank_0; //Blank Data
+	//uint8 Blank_1; //Blank Data
+
+	float PositionX;
+	float PositionY;
 };
 
 namespace LandscapeGpuRenderParameter {
@@ -68,12 +64,11 @@ class FLandscapeGpuRenderVertexFactory : public FVertexFactory
 {
 	DECLARE_VERTEX_FACTORY_TYPE(FLandscapeGpuRenderVertexFactory);
 
-	typedef FLandscapeVertexFactory Super;
 public:
 
-	struct FDataType : FLandscapeVertexFactory::FDataType
-	{
-		
+	struct FDataType{
+		/** The stream to read the vertex position from. */
+		FVertexStreamComponent PositionComponent;
 	};
 
 	FLandscapeGpuRenderVertexFactory(ERHIFeatureLevel::Type InFeatureLevel)
@@ -92,6 +87,13 @@ public:
 	static bool ShouldCompilePermutation(const FVertexFactoryShaderPermutationParameters& Parameters);
 
 	static void ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment);
+
+	/**
+	* Copy the data from another vertex factory
+	* @param Other - factory to copy from
+	*/
+	void Copy(const FLandscapeGpuRenderVertexFactory& Other);
+
 	// FRenderResource interface.
 	virtual void InitRHI() override;
 
@@ -106,6 +108,8 @@ public:
 private:
 	/** stream component data bound to this vertex factory */
 	FDataType MobileData;
+
+	friend class FLandscapeGpuRenderProxyComponentSceneProxy;
 };
 
 class FLandscapeClusterVertexBuffer : public FVertexBuffer
@@ -122,12 +126,31 @@ public:
 
 class FLandscapeGpuRenderProxyComponentSceneProxy final : public FPrimitiveSceneProxy {
 public:
-	//Mobile Material, Resources Ref
-	TArray<UMaterialInterface*> AvailableMaterials;
+	//[Resources Value]
+	uint32 UniqueWorldId;
 
+	//[Resources Manager]
+	FLandscapeGpuRenderVertexFactory* VertexFactory;
+
+	//[Resources Manager]
+	FLandscapeClusterVertexBuffer* VertexBuffer;
+
+	//[Resources Manager]
+	TArray<FIndexBuffer*> IndexBuffers;
+
+	//[Resources Value]
+	FGuid LandscapeKey;
+
+	//[Resources Ref]
+	TArray<UMaterialInterface*> AvailableMaterials;//Mobile Material, 
+
+	template <typename IndexType>
+	static void CreateClusterIndexBuffers(TArray<FIndexBuffer*>& InIndexBuffers);
 
 	SIZE_T GetTypeHash() const override;
 	FLandscapeGpuRenderProxyComponentSceneProxy(ULandscapeGpuRenderProxyComponent* InComponent);
+	~FLandscapeGpuRenderProxyComponentSceneProxy();
+
 	// FPrimitiveSceneProxy interface.
 	virtual void ApplyWorldOffset(FVector InOffset) override;
 	//virtual void DrawStaticElements(FStaticPrimitiveDrawInterface* PDI) override; assume all is dynamic
