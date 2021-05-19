@@ -6,6 +6,7 @@
 #include "LandscapeGpuRenderProxyComponent.generated.h"
 
 class ULandscapeComponent;
+class ALandscapeProxy;
 
 UCLASS()
 class ULandscapeGpuRenderProxyComponent : public UPrimitiveComponent
@@ -16,12 +17,18 @@ class ULandscapeGpuRenderProxyComponent : public UPrimitiveComponent
 
 	virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
 	virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
-	void CheckMaterial(ULandscapeComponent* LandscapeComponent);
+
+	ALandscapeProxy* GetLandscapeProxy() const;
+	void GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials, bool bGetDebugMaterials) const;
 	void Init(ULandscapeComponent* LandscapeComponent);
+
 
 public:
 	//[Don't Serialize]
 	uint32 NumComponents;
+
+	//[Don't Serialize]
+	uint32 SectionSizeQuads;
 
 	//[Don't Serialize]
 	FBox ProxyLocalBox;

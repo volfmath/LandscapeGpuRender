@@ -4,6 +4,8 @@
 #include "SceneView.h"
 #include "MobileGpuDriven.h"
 
+IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeGpuRenderUniformBuffer, "LandscapeGpuRenderUniformBuffer");
+
 TMap<uint32, FMobileLandscapeGPURenderSystem_GameThread*> FMobileLandscapeGPURenderSystem_GameThread::LandscapeGPURenderSystem_GameThread;
 
 FMobileLandscapeGPURenderSystem_GameThread::FMobileLandscapeGPURenderSystem_GameThread(/*uint32 NumComponents*/)
@@ -23,9 +25,17 @@ void FMobileLandscapeGPURenderSystem_GameThread::RegisterGPURenderLandscapeEntit
 		check(IsInGameThread());
 		check(LandscapeComponent->GetWorld());
 		check(LandscapeComponent->GetLandscapeProxy());
-		check((LandscapeComponent->SubsectionSizeQuads + 1) * LandscapeComponent->NumSubsections >= LandscapeGpuRenderParameter::ClusterQuadSize);
+		check((LandscapeComponent->SubsectionSizeQuads + 1) >= LandscapeGpuRenderParameter::ClusterQuadSize);		
+		const FLandscapeSubmitData& SubmitToRenderThreadComponentData = FLandscapeSubmitData::CreateLandscapeSubmitData(LandscapeComponent);
+
+		//At first, Submit to renderthread
+		ENQUEUE_RENDER_COMMAND(RegisterGPURenderLandscapeEntity)(
+			[SubmitToRenderThreadComponentData](FRHICommandList& RHICmdList) {
+				FMobileLandscapeGPURenderSystem_RenderThread::RegisterGPURenderLandscapeEntity_RenderThread(SubmitToRenderThreadComponentData);
+			}
+		);
+
 		uint32 UniqueWorldIndex = LandscapeComponent->GetWorld()->GetUniqueID();
-		FLandscapeSubmitData SubmitToRenderThreadComponentData = FLandscapeSubmitData::CreateLandscapeSubmitData(LandscapeComponent);
 		uint32 NumComponents = LandscapeComponent->GetLandscapeProxy()->LandscapeComponents.Num();
 
 		//Create System if null
@@ -50,21 +60,14 @@ void FMobileLandscapeGPURenderSystem_GameThread::RegisterGPURenderLandscapeEntit
 			//ComponentRef->CheckMaterial(LandscapeComponent); //Debug Only?
 		}
 
-		//数据准备完毕创建渲染结构
+		//RegisterTo FScene, call AddPrimitive
 		ULandscapeGpuRenderProxyComponent* ComponentRef = *ComponentPtr;
 		if (ComponentRef->NumComponents == NumComponents) {
-			//maybe by InvalidateLightingCache called
+			//Maybe by InvalidateLightingCache called
 			if (!ComponentRef->IsRegistered()) {
 				ComponentRef->RegisterComponent();
 			}
 		}
-
-		//submit to renderthread
-		ENQUEUE_RENDER_COMMAND(RegisterGPURenderLandscapeEntity)(
-			[FoundSystem, SubmitToRenderThreadComponentData](FRHICommandList& RHICmdList) {
-				FMobileLandscapeGPURenderSystem_RenderThread::RegisterGPURenderLandscapeEntity_RenderThread(SubmitToRenderThreadComponentData);
-			}
-		);
 	}
 }
 
@@ -95,7 +98,7 @@ void FMobileLandscapeGPURenderSystem_GameThread::UnRegisterGPURenderLandscapeEnt
 			}
 
 			//Submit to renderthread
-			FLandscapeSubmitData SubmitToRenderThreadComponentData = FLandscapeSubmitData::CreateLandscapeSubmitData(LandscapeComponent);
+			const FLandscapeSubmitData& SubmitToRenderThreadComponentData = FLandscapeSubmitData::CreateLandscapeSubmitData(LandscapeComponent);
 			ENQUEUE_RENDER_COMMAND(UnRegisterGPURenderLandscapeEntity)(
 				[SubmitToRenderThreadComponentData](FRHICommandList& RHICmdList) {
 					FMobileLandscapeGPURenderSystem_RenderThread::UnRegisterGPURenderLandscapeEntity_RenderThread(SubmitToRenderThreadComponentData);
@@ -108,7 +111,8 @@ void FMobileLandscapeGPURenderSystem_GameThread::UnRegisterGPURenderLandscapeEnt
 FLandscapeSubmitData FLandscapeSubmitData::CreateLandscapeSubmitData(ULandscapeComponent* LandscapeComponent) {
 	FLandscapeSubmitData RetSubmitData;
 	RetSubmitData.UniqueWorldId = LandscapeComponent->GetWorld()->GetUniqueID();
-	RetSubmitData.ClusterSizePerComponent = (LandscapeComponent->SubsectionSizeQuads + 1) * LandscapeComponent->NumSubsections / LandscapeGpuRenderParameter::ClusterQuadSize;
+	RetSubmitData.NumSections = LandscapeComponent->NumSubsections;
+	RetSubmitData.ClusterSizePerSection = (LandscapeComponent->SubsectionSizeQuads + 1) / LandscapeGpuRenderParameter::ClusterQuadSize;
 	RetSubmitData.ComponentBase = LandscapeComponent->GetSectionBase() / LandscapeComponent->ComponentSizeQuads;
 	RetSubmitData.LandscapeKey = LandscapeComponent->GetLandscapeProxy()->GetLandscapeGuid();
 	return RetSubmitData;
@@ -124,10 +128,7 @@ public:
 	*/
 	void Bind(const FShaderParameterMap& ParameterMap)
 	{
-		//TexCoordOffsetParameter.Bind(ParameterMap, TEXT("TexCoordOffset"));
-		///*InstanceOffset.Bind(ParameterMap, TEXT("InstanceOffset"));*/
-		//ClusterInstanceDataBuffer.Bind(ParameterMap, TEXT("ClusterInstanceDataBuffer"));
-		//ComponentLODBuffer.Bind(ParameterMap, TEXT("ComponentLODBuffer"));
+		LandscapeGpuRenderOutput.Bind(ParameterMap, TEXT("LandscapeGpuRenderOutputBuffer"));
 	}
 
 	void GetElementShaderBindings(
@@ -143,17 +144,13 @@ public:
 	) const
 	{
 		SCOPE_CYCLE_COUNTER(STAT_LandscapeVFDrawTimeVS);
-		//const FLandscapeClusterBatchElementParams* BatchElementParams = (const FLandscapeClusterBatchElementParams*)BatchElement.UserData;
-		//UniformBuffer is MutilFrame Resource
-		//ShaderBindings.Add(Shader->GetUniformBufferParameter<FLandscapeComponentClusterUniformBuffer>(), *BatchElementParams->LandscapeComponentClusterUniformBuffer);
-		//ShaderBindings.Add(ClusterInstanceDataBuffer, BatchElementParams->ClusterInstanceDataBuffer->SRV);
-		//ShaderBindings.Add(ComponentLODBuffer, BatchElementParams->ComponentLODBuffer->SRV);
+		const FLandscapeGpuRenderUserData* GpuParameters = reinterpret_cast<const FLandscapeGpuRenderUserData*>(BatchElement.UserData);
+		ShaderBindings.Add(LandscapeGpuRenderOutput, GpuParameters->LandscapeGpuRenderOutputBufferSRV);
+		ShaderBindings.Add(Shader->GetUniformBufferParameter<FLandscapeGpuRenderUniformBuffer>(), GpuParameters->LandscapeGpuRenderUniformBuffer);
 	}
 
 protected:
-	//LAYOUT_FIELD(FShaderParameter, TexCoordOffsetParameter);
-	//LAYOUT_FIELD(FShaderResourceParameter, ClusterInstanceDataBuffer)
-	//LAYOUT_FIELD(FShaderResourceParameter, ComponentLODBuffer)
+	LAYOUT_FIELD(FShaderResourceParameter, LandscapeGpuRenderOutput)
 };
 
 class FLandscapeGpuRenderVertexFactoryPSParameters : public FVertexFactoryShaderParameters{
@@ -283,9 +280,12 @@ void FLandscapeGpuRenderProxyComponentSceneProxy::CreateClusterIndexBuffers(TArr
 	}
 }
 
+const static FName NAME_GpuRenderLandscapeResourceNameForDebugging(TEXT("GpuRenderLandscape"));
 FLandscapeGpuRenderProxyComponentSceneProxy::FLandscapeGpuRenderProxyComponentSceneProxy(ULandscapeGpuRenderProxyComponent* InComponent)
-	: FPrimitiveSceneProxy(InComponent)
+	: FPrimitiveSceneProxy(InComponent, NAME_GpuRenderLandscapeResourceNameForDebugging)
 	, UniqueWorldId(InComponent->GetWorld()->GetUniqueID())
+	, NumClusterPerSection((InComponent->SectionSizeQuads + 1) / LandscapeGpuRenderParameter::ClusterQuadSize)
+	, SectionSizeQuads(InComponent->SectionSizeQuads)
 	, VertexFactory(nullptr)
 	, VertexBuffer(nullptr)
 	, LandscapeKey(InComponent->LandscapeKey)
@@ -319,7 +319,25 @@ void FLandscapeGpuRenderProxyComponentSceneProxy::GetLightRelevance(const FLight
 }
 
 void FLandscapeGpuRenderProxyComponentSceneProxy::OnTransformChanged() {
-	
+	// cache component's WorldToLocal
+	FMatrix LocalToWorldNoScaling = GetLocalToWorld();
+	LocalToWorldNoScaling.RemoveScaling();
+
+	FLandscapeGpuRenderUniformBuffer LandscapeGpuRenderParams;
+	LandscapeGpuRenderParams.NumClusterPerSection = NumClusterPerSection;
+	LandscapeGpuRenderParams.QuadSizeParameter = FVector2D(LandscapeGpuRenderParameter::ClusterQuadSize, SectionSizeQuads);
+	LandscapeGpuRenderParams.LocalToWorldNoScaling = LocalToWorldNoScaling;
+
+	if (!LandscapeGpuRenderUniformBuffer.IsValid()) {
+		LandscapeGpuRenderUniformBuffer = TUniformBufferRef<FLandscapeGpuRenderUniformBuffer>::CreateUniformBufferImmediate(LandscapeGpuRenderParams, UniformBuffer_MultiFrame);
+	}
+	else {
+		LandscapeGpuRenderUniformBuffer.UpdateUniformBufferImmediate(LandscapeGpuRenderParams);
+	}	
+
+	//Upload the UniformBuffer to GpuRenderProxyComponent
+	FLandscapeGpuRenderProxyComponent_RenderThread& GpuRenderDataRef = FMobileLandscapeGPURenderSystem_RenderThread::GetLandscapeGPURenderComponent_RenderThread(UniqueWorldId, LandscapeKey);
+	GpuRenderDataRef.LandscapeGpuRenderUserData.LandscapeGpuRenderUniformBuffer = LandscapeGpuRenderUniformBuffer.GetReference();
 }
 
 void FLandscapeGpuRenderProxyComponentSceneProxy::CreateRenderThreadResources() {
@@ -338,7 +356,7 @@ void FLandscapeGpuRenderProxyComponentSceneProxy::CreateRenderThreadResources() 
 	//Create and init VertexFactory
 	auto FeatureLevel = GetScene().GetFeatureLevel();
 	VertexFactory = new FLandscapeGpuRenderVertexFactory(FeatureLevel);
-	VertexFactory->MobileData.PositionComponent = FVertexStreamComponent(VertexBuffer, 0, sizeof(FLandscapeClusterVertex), VET_UByte4N);
+	VertexFactory->MobileData.PositionComponent = FVertexStreamComponent(VertexBuffer, 0, sizeof(FLandscapeClusterVertex), /*VET_UByte4N*/VET_Float2);
 	VertexFactory->InitResource();
 }
 
@@ -386,7 +404,7 @@ void FLandscapeGpuRenderProxyComponentSceneProxy::GetDynamicMeshElements(const T
 	UMaterialInterface* MaterialInterface = AvailableMaterials[0];
 	const auto& GpuRenderData = FMobileLandscapeGPURenderSystem_RenderThread::GetLandscapeGPURenderComponent_RenderThread(UniqueWorldId, LandscapeKey);
 	for (int LodIndex = 0; LodIndex < LandscapeGpuRenderParameter::ClusterLod; ++LodIndex) {
-		FMeshBatch MeshBatch;
+		FMeshBatch& MeshBatch = Collector.AllocateMesh();
 		MeshBatch.VertexFactory = VertexFactory;
 		MeshBatch.MaterialRenderProxy = MaterialInterface->GetRenderProxy();
 		MeshBatch.LCI = nullptr; //don't need to any bake info
@@ -404,7 +422,7 @@ void FLandscapeGpuRenderProxyComponentSceneProxy::GetDynamicMeshElements(const T
 
 		// Combined batch element
 		FMeshBatchElement& BatchElement = MeshBatch.Elements[0];
-		BatchElement.UserData = /*&ComponentBatchUserData*/nullptr; //UniformBuffer etc...
+		BatchElement.UserData = &GpuRenderData.LandscapeGpuRenderUserData;
 		BatchElement.PrimitiveUniformBuffer = GetUniformBuffer();
 		BatchElement.IndexBuffer = IndexBuffers[LodIndex];
 		BatchElement.NumPrimitives = 0; //Use indirect

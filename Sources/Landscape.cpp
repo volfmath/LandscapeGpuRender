@@ -1439,6 +1439,10 @@ FPrimitiveSceneProxy* ULandscapeComponent::CreateSceneProxy()
 	}
 	else // i.e. (FeatureLevel <= ERHIFeatureLevel::ES3_1)
 	{
+		if(CVarMobileLandscapeGpuRender.GetValueOnAnyThread() != 0) {
+			return nullptr;
+		}
+
 		if (PlatformData.HasValidRuntimeData())
 		{
 			LODStreamingProxy->InitResourceStateForMobileStreaming();

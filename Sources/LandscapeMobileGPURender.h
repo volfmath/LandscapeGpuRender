@@ -11,20 +11,18 @@
 
 struct FLandscapeClusterVertex;
 
-//BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeGpuRenderUniformBuffer, LANDSCAPE_API)
-//SHADER_PARAMETER(FMatrix, LocalToWorldNoScaling)
-//SHADER_PARAMETER_TEXTURE(Texture2D, HeightmapTexture)
-//SHADER_PARAMETER_SAMPLER(SamplerState, HeightmapTextureSampler)
-//SHADER_PARAMETER_TEXTURE(Texture2D, NormalmapTexture)
-//SHADER_PARAMETER_SAMPLER(SamplerState, NormalmapTextureSampler)
-//END_GLOBAL_SHADER_PARAMETER_STRUCT()
+BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeGpuRenderUniformBuffer, LANDSCAPE_API)
+	SHADER_PARAMETER(int32, NumClusterPerSection)
+	SHADER_PARAMETER(FVector2D, QuadSizeParameter)
+	SHADER_PARAMETER(FMatrix, LocalToWorldNoScaling)
+END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 //Submit to landscape data
 struct FLandscapeSubmitData {
 	static FLandscapeSubmitData CreateLandscapeSubmitData(ULandscapeComponent* LandscapeComponent);
-
 	uint32 UniqueWorldId;
-	uint32 ClusterSizePerComponent;
+	uint32 NumSections;
+	uint32 ClusterSizePerSection;
 	FIntPoint ComponentBase;
 	FGuid LandscapeKey;
 };
@@ -129,6 +127,12 @@ public:
 	//[Resources Value]
 	uint32 UniqueWorldId;
 
+	//[Resources Value]
+	uint32 NumClusterPerSection;
+
+	//[Resources Value]
+	uint32 SectionSizeQuads;
+
 	//[Resources Manager]
 	FLandscapeGpuRenderVertexFactory* VertexFactory;
 
@@ -137,6 +141,10 @@ public:
 
 	//[Resources Manager]
 	TArray<FIndexBuffer*> IndexBuffers;
+
+	//[Resources Manager]
+	TUniformBufferRef<FLandscapeGpuRenderUniformBuffer> LandscapeGpuRenderUniformBuffer;
+	//TUniformBuffer<FLandscapeGpuRenderUniformBuffer> LandscapeGpuRenderUniformBuffer; //TUniformBuffer will store a copy of Content in memory, no need
 
 	//[Resources Value]
 	FGuid LandscapeKey;

@@ -71,6 +71,9 @@ FPrimitiveSceneProxy* ULandscapeGpuRenderProxyComponent::CreateSceneProxy() {
 void ULandscapeGpuRenderProxyComponent::Init(ULandscapeComponent* LandscapeComponent) {
 	NumComponents = 1; //Initial always 1
 
+	//Set SectionSizeQuads
+	SectionSizeQuads = LandscapeComponent->SubsectionSizeQuads;
+
 	//Set LandscapeKey
 	LandscapeKey = LandscapeComponent->GetLandscapeProxy()->GetLandscapeGuid();
 
@@ -93,8 +96,61 @@ void ULandscapeGpuRenderProxyComponent::Init(ULandscapeComponent* LandscapeCompo
 	SetupAttachment(LandscapeComponent->GetLandscapeProxy()->GetRootComponent(), NAME_None);
 }
 
-void ULandscapeGpuRenderProxyComponent::CheckMaterial(ULandscapeComponent* LandscapeComponent) {
-	//for (int32 Index = 0; Index < LandscapeComponent->MobileMaterialInterfaces.Num(); ++Index) {
-	//	check(MobileMaterialInterfaces[Index].Get() == LandscapeComponent->MobileMaterialInterfaces[Index]);
+
+ALandscapeProxy* ULandscapeGpuRenderProxyComponent::GetLandscapeProxy() const{
+	return CastChecked<ALandscapeProxy>(GetOuter());
+}
+
+void ULandscapeGpuRenderProxyComponent::GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials, bool bGetDebugMaterials) const{
+	// TODO - investigate whether this is correct
+
+	//ALandscapeProxy* Actor = GetLandscapeProxy();
+
+	//if (Actor != nullptr && Actor->bUseDynamicMaterialInstance)
+	//{
+	//	OutMaterials.Append(MaterialInstancesDynamic.FilterByPredicate([](UMaterialInstanceDynamic* MaterialInstance) { return MaterialInstance != nullptr; }));
 	//}
+	//else
+	//{
+	//	OutMaterials.Append(MaterialInstances.FilterByPredicate([](UMaterialInstanceConstant* MaterialInstance) { return MaterialInstance != nullptr; }));
+	//}
+
+	//if (OverrideMaterial)
+	//{
+	//	OutMaterials.Add(OverrideMaterial);
+	//}
+
+	//if (OverrideHoleMaterial)
+	//{
+	//	OutMaterials.Add(OverrideHoleMaterial);
+	//}
+	OutMaterials.Reserve(MobileMaterialInterfaces.Num());
+	for (int32 Index = 0; Index < MobileMaterialInterfaces.Num(); ++Index) {
+		OutMaterials.Emplace(MobileMaterialInterfaces[Index].Get());
+	}
+
+//#if WITH_EDITORONLY_DATA
+//	if (EditToolRenderData.ToolMaterial)
+//	{
+//		OutMaterials.Add(EditToolRenderData.ToolMaterial);
+//	}
+//
+//	if (EditToolRenderData.GizmoMaterial)
+//	{
+//		OutMaterials.Add(EditToolRenderData.GizmoMaterial);
+//	}
+//#endif
+
+//#if WITH_EDITOR
+//	//if (bGetDebugMaterials) // TODO: This should be tested and enabled
+//	{
+//		OutMaterials.Add(GLayerDebugColorMaterial);
+//		OutMaterials.Add(GSelectionColorMaterial);
+//		OutMaterials.Add(GSelectionRegionMaterial);
+//		OutMaterials.Add(GMaskRegionMaterial);
+//		OutMaterials.Add(GColorMaskRegionMaterial);
+//		OutMaterials.Add(GLandscapeLayerUsageMaterial);
+//		OutMaterials.Add(GLandscapeDirtyMaterial);
+//	}
+//#endif
 }
