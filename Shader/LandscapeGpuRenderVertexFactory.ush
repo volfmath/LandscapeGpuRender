@@ -11,75 +11,17 @@
 // Set by FLightMapTexturePolicy
 #include "/Engine/Generated/UniformBuffers/PrecomputedLightingBuffer.ush"
 
-#if LANDSCAPE_XYOFFSET
-#define XYOFFSET_SCALE (1.0f/256.f)
-#endif
+
+Buffer<uint> LandscapeGpuRenderOutputBuffer;
 
 #if (ES3_1_PROFILE)
 /* Offset for UV localization for large UV values. */
 float2 TexCoordOffset;
 #endif
 
-/* Return index into buffers for this section instance. */
-int GetComponentLinearIndex()
-{
-	return 0;
-}
-
-/**
- * x = Current mesh LOD
- * y = unused
- * z = SectionSizeQuads in current mesh LOD
- * w = 1/SectionSizeQuads in current mesh LOD
- **/
-float4 GetLodValues(uint ComponentIndex)
-{
-	return float4(0.f, 0.f, 0.f, 0.f);
-}
-
-/**
- * x = Heightmap texture LOD difference from current LOD to highest LOD
- * y = todo: XYOffset texture LOD difference from current LOD to highest LOD
- */
-float2 GetLodBias(uint ComponentIndex)
-{
-	return float2(0.f, 0.f);
-}
-
-float2 GetSectionTessellationFalloff(uint ComponentIndex)
-{
-	return float2(0.f, 0.f);
-}
-
-/* Get current Lod for this section instance. */
-float GetSectionLod(uint ComponentIndex)
-{
-	return 0.f;
-}
-
-/** 
- * Get current Lods for neighbour section instances. 
- *       -Y
- *    - - 0 - -
- *    |       |
- * -X 1   P   2 +X
- *    |       |
- *    - - 3 - -
- *       +Y
- */
-float4 GetNeighborSectionLod(uint ComponentIndex)
-{
-	return float4(0.f, 0.f, 0.f, 0.f);
-}
-
-/** Calculate fractional render LOD for a subsection. */
-float CalcLOD(uint ComponentIndex, float2 xyLocalToSubsection, float2 Subsection)
-{
-	return 0.f;
-}
-
 struct FVertexFactoryInput
 {	
+	uint InstanceId : SV_InstanceID;
 	float2 Position : ATTRIBUTE0;
 	//float4 PackedPosition: ATTRIBUTE0; 
 };
@@ -125,13 +67,8 @@ struct FLandscapeTexCoords
 
 struct FVertexFactoryIntermediates
 {
-	float4 InputPosition;
 	float3 LocalPosition;
 	float3 WorldNormal;
-	uint ComponentIndex;
-	float4 LodValues;
-	float2 LodBias;
-	float2 TessellationFalloff;
 };
 
 float3 GetLocalPosition(FVertexFactoryIntermediates Intermediates)
@@ -292,7 +229,7 @@ FMaterialPixelParameters GetMaterialPixelParameters(FVertexFactoryInterpolantsVS
 
 	// Calculate LocalToTangent directly from normal map texture.
 	float3x3 TangentToLocal = VertexFactoryGetPerPixelTangentBasis(Interpolants);
-	Result.TangentToWorld = mul(TangentToLocal, (float3x3) LandscapeParameters.LocalToWorldNoScaling);
+	Result.TangentToWorld = TangentToLocal; /*mul(TangentToLocal, (float3x3) LandscapeParameters.LocalToWorldNoScaling);*/
 	Result.UnMirrored = 1;
 
 	Result.VertexColor = 1;
@@ -318,7 +255,7 @@ FMaterialVertexParameters GetMaterialVertexParameters(FVertexFactoryInput Input,
 	FMaterialVertexParameters Result = (FMaterialVertexParameters) 0;
 	Result.WorldPosition = WorldPosition;
 	Result.VertexColor = float4(1, 1, 1, 1);
-	Result.TangentToWorld = mul(TangentToLocal, (float3x3) LandscapeParameters.LocalToWorldNoScaling);
+	Result.TangentToWorld = TangentToLocal; /*mul(TangentToLocal, (float3x3) LandscapeParameters.LocalToWorldNoScaling);*/
 	Result.PreSkinnedPosition = Intermediates.LocalPosition.xyz;
 	Result.PreSkinnedNormal = TangentToLocal[2].xyz;
 
@@ -391,15 +328,43 @@ void GetShadowMapCoordinate(FVertexFactoryInterpolantsVSToPS Interpolants, out f
 }
 #endif
 
+//uint GetClusterLinearIndexByClusterIndex(uint2 ClusterIndex)
+//{
+//	ClusterIndex
+
+//}
+
+//uint4 GetNeighborLod(uint2 ClusterIndex)
+//{
+//	//Calculate 
+//	uint Left = ;
+//	uint Right = ;
+//}
+
 FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput Input)
 {
 	FVertexFactoryIntermediates Intermediates;
-	Intermediates.InputPosition = float4(Input.Position.xy, 0.f, 0.f);
-	Intermediates.ComponentIndex = GetComponentLinearIndex();
-	Intermediates.LodValues = GetLodValues(Intermediates.ComponentIndex);
-	Intermediates.LodBias = GetLodBias(Intermediates.ComponentIndex);
-	Intermediates.TessellationFalloff = GetSectionTessellationFalloff(Intermediates.ComponentIndex);
-	Intermediates.LocalPosition = float3(Intermediates.InputPosition.xy, 0.f);
+	
+	uint PackData = LandscapeGpuRenderOutputBuffer[Input.InstanceId];
+	uint3 UnPackData = PackData >> uint3(0, 8, 16);
+	UnPackData = UnPackData & uint3(0xff, 0xff, 0xffff);
+	uint2 ClusterIndex = UnPackData.xy; 
+	uint4 LodData = UnPackData.z;
+	
+	uint2 SectionOffset = ClusterIndex.xy & (LandscapeGpuRenderUniformBuffer.NumClusterPerSection - 1);
+	uint2 SectionBlock = ClusterIndex.xy / LandscapeGpuRenderUniformBuffer.NumClusterPerSection;
+	bool2 EdgeCluster = SectionOffset == LandscapeGpuRenderUniformBuffer.NumClusterPerSection - 1;
+	
+
+	float2 ClampPosition = float2(
+		EdgeCluster.x ? min(Input.Position.x, LandscapeGpuRenderUniformBuffer.QuadSizeParameter.x - 1.f) : Input.Position.x,
+		EdgeCluster.y ? min(Input.Position.y, LandscapeGpuRenderUniformBuffer.QuadSizeParameter.x - 1.f) : Input.Position.y
+	);
+	
+	float2 ClusterPositionSection = SectionOffset * LandscapeGpuRenderUniformBuffer.QuadSizeParameter.xx;
+	float2 ClusterPositionGlobal = SectionBlock * LandscapeGpuRenderUniformBuffer.QuadSizeParameter.yy + ClusterPositionSection;
+	
+	Intermediates.LocalPosition = float3(ClampPosition + ClusterPositionGlobal, 0.f);
 	Intermediates.WorldNormal = float3( 0.0, 0.0, 1.0 );
 	
 	return Intermediates;
