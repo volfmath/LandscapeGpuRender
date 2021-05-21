@@ -66,7 +66,7 @@ void FLandscapeGpuRenderProxyComponent_RenderThread::UpdateAllGPUBuffer() {
 			int32 LodClusterQuadSize = LandscapeGpuRenderParameter::ClusterQuadSize >> DrawElementIndex;
 			auto& DrawCommandBuffer = IndirectDrawCommandBuffer_CPU[DrawElementIndex];
 			DrawCommandBuffer.IndexCount = LodClusterQuadSize * LodClusterQuadSize * 2 * 3;
-			DrawCommandBuffer.InstanceCount = ClusterSqureSizePerComponent * NumRegisterComponent;
+			DrawCommandBuffer.InstanceCount = DrawElementIndex < LandscapeGpuRenderParameter::ClusterLod - 1 ? ClusterSqureSizePerComponent : 0;
 			DrawCommandBuffer.FirstIndex = 0;
 			DrawCommandBuffer.VertexOffset = 0;
 			DrawCommandBuffer.FirstInstance = 0;

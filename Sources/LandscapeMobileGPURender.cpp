@@ -129,6 +129,8 @@ public:
 	void Bind(const FShaderParameterMap& ParameterMap)
 	{
 		LandscapeGpuRenderOutput.Bind(ParameterMap, TEXT("LandscapeGpuRenderOutputBuffer"));
+
+		TestLodParameter.Bind(ParameterMap, TEXT("TestLodParameter")); //Test
 	}
 
 	void GetElementShaderBindings(
@@ -147,10 +149,14 @@ public:
 		const FLandscapeGpuRenderUserData* GpuParameters = reinterpret_cast<const FLandscapeGpuRenderUserData*>(BatchElement.UserData);
 		ShaderBindings.Add(LandscapeGpuRenderOutput, GpuParameters->LandscapeGpuRenderOutputBufferSRV);
 		ShaderBindings.Add(Shader->GetUniformBufferParameter<FLandscapeGpuRenderUniformBuffer>(), GpuParameters->LandscapeGpuRenderUniformBuffer);
+
+		ShaderBindings.Add(TestLodParameter, BatchElement.UserIndex);//Test
 	}
 
 protected:
 	LAYOUT_FIELD(FShaderResourceParameter, LandscapeGpuRenderOutput)
+
+	LAYOUT_FIELD(FShaderParameter, TestLodParameter) //Test
 };
 
 class FLandscapeGpuRenderVertexFactoryPSParameters : public FVertexFactoryShaderParameters{
@@ -433,6 +439,9 @@ void FLandscapeGpuRenderProxyComponentSceneProxy::GetDynamicMeshElements(const T
 		BatchElement.InstancedLODIndex = 0; //用来传递LOD, don't need
 		BatchElement.IndirectArgsBuffer = GpuRenderData.IndirectDrawCommandBuffer_GPU.Buffer;
 		BatchElement.IndirectArgsOffset = LodIndex * sizeof(FDrawIndirectCommandArgs_CPU);
+
+		BatchElement.UserIndex = LodIndex; // Test
+
 		Collector.AddMesh(0, MeshBatch);
 	}
 }

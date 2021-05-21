@@ -14,6 +14,10 @@
 
 Buffer<uint> LandscapeGpuRenderOutputBuffer;
 
+//Test
+uint TestLodParameter;
+//Test
+
 #if (ES3_1_PROFILE)
 /* Offset for UV localization for large UV values. */
 float2 TexCoordOffset;
@@ -328,40 +332,117 @@ void GetShadowMapCoordinate(FVertexFactoryInterpolantsVSToPS Interpolants, out f
 }
 #endif
 
-//uint GetClusterLinearIndexByClusterIndex(uint2 ClusterIndex)
+//void EdgeFunc()
 //{
-//	ClusterIndex
 
+//	bool DownAdjust = LodDifference.x > 0 && (ClampPosition.y == UniformLodSize.y || (ClampPosition.y == NonUniformLodSize.y && EdgeCluster.y));
+//	bool LeftAdjust = LodDifference.y > 0 && ClampPosition.x == 0;
+//	bool TopAdjust = LodDifference.z > 0 && ClampPosition.y == 0;
+//	bool RightAdjust = LodDifference.w > 0 && (ClampPosition.x == UniformLodSize.x || (ClampPosition.x == NonUniformLodSize.x && EdgeCluster.x));
+
+//	if (DownAdjust)
+//	{
+//		if (EdgeCluster.x)
+//		{
+//			ClampPosition.x = max(float(((ClmapPositionUint.x + 1) >> LodDifference.x) - 1), 0.f);
+//			NonUniformLodSize.x = float(AdjustQuadSize.x >> LodDifference.x) - 1.f;
+//		}
+//		else
+//		{
+//			ClampPosition.x = float(ClmapPositionUint.x >> LodDifference.x);
+//			AdjustScale.x = AdjustScale.x * float(1 << LodDifference.x);
+//		}
+//	}
+	
+//	if (LeftAdjust)
+//	{
+//		if (EdgeCluster.y)
+//		{
+//			ClampPosition.y = max(float(((ClmapPositionUint.y + 1) >> LodDifference.y) - 1), 0.f);
+//			NonUniformLodSize.y = float(AdjustQuadSize.y >> LodDifference.y) - 1.f;
+//		}
+//		else
+//		{
+//			ClampPosition.y = float(ClmapPositionUint.y >> LodDifference.y);
+//			AdjustScale.y = AdjustScale.y * float(1 << LodDifference.y);
+//		}
+//	}
+	
+//	if (TopAdjust)
+//	{
+//		if (EdgeCluster.x)
+//		{
+//			ClampPosition.x = max(float(((ClmapPositionUint.x + 1) >> LodDifference.z) - 1), 0.f);
+//			NonUniformLodSize.x = float(AdjustQuadSize.x >> LodDifference.z) - 1.f;
+//		}
+//		else
+//		{
+//			ClampPosition.x = float(ClmapPositionUint.x >> LodDifference.z);
+//			AdjustScale.x = AdjustScale.x * float(1 << LodDifference.z);
+//		}
+//	}
+	
+//	if (RightAdjust)
+//	{
+//		if (EdgeCluster.y)
+//		{
+//			ClampPosition.y = max(float(((ClmapPositionUint.y + 1) >> LodDifference.w) - 1), 0.f);
+//			NonUniformLodSize.y = float(AdjustQuadSize.y >> LodDifference.w) - 1.f;
+//		}
+//		else
+//		{
+//			ClampPosition.y = float(ClmapPositionUint.y >> LodDifference.w);
+//			AdjustScale.y = AdjustScale.y * float(1 << LodDifference.w);
+//		}
+//	}
 //}
 
-//uint4 GetNeighborLod(uint2 ClusterIndex)
-//{
-//	//Calculate 
-//	uint Left = ;
-//	uint Right = ;
-//}
 
 FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput Input)
 {
 	FVertexFactoryIntermediates Intermediates;
 	
-	uint PackData = LandscapeGpuRenderOutputBuffer[Input.InstanceId];
-	uint3 UnPackData = PackData >> uint3(0, 8, 16);
-	UnPackData = UnPackData & uint3(0xff, 0xff, 0xffff);
-	uint2 ClusterIndex = UnPackData.xy; 
-	uint4 LodData = UnPackData.z;
-	
-	uint2 SectionOffset = ClusterIndex.xy & (LandscapeGpuRenderUniformBuffer.NumClusterPerSection - 1);
-	uint2 SectionBlock = ClusterIndex.xy / LandscapeGpuRenderUniformBuffer.NumClusterPerSection;
-	bool2 EdgeCluster = SectionOffset == LandscapeGpuRenderUniformBuffer.NumClusterPerSection - 1;
-	
+	//UnPackData
+	uint PackData = LandscapeGpuRenderOutputBuffer[Input.InstanceId + TestLodParameter * 16];
+	uint3 UnPackData_0 = (PackData >> uint3(0, 8, 28)) & uint3(0xff, 0xff, 0x7);
+	uint4 LodDataNeighbor = (PackData >> uint4(16, 19, 22, 25)) & 0x7;
+	uint2 ClusterIndex = UnPackData_0.xy;
+	uint SelfLod = UnPackData_0.z;
 
-	float2 ClampPosition = float2(
-		EdgeCluster.x ? min(Input.Position.x, LandscapeGpuRenderUniformBuffer.QuadSizeParameter.x - 1.f) : Input.Position.x,
-		EdgeCluster.y ? min(Input.Position.y, LandscapeGpuRenderUniformBuffer.QuadSizeParameter.x - 1.f) : Input.Position.y
+	float2 SelfLodScale = float2(1 << SelfLod, 1 << SelfLod);
+	uint2 SelfAdjustQuadSize = uint2(LandscapeGpuRenderUniformBuffer.QuadSizeParameter.xx) >> SelfLod;
+	float2 SelfUniformLodSize = float2(SelfAdjustQuadSize);
+	float2 SelfNonUniformLodSize = float2(SelfAdjustQuadSize) - 1.f;
+	
+	uint2 ClusterOffset = ClusterIndex.xy & (LandscapeGpuRenderUniformBuffer.NumClusterPerSection - 1);
+	bool2 EdgeCluster = ClusterOffset == LandscapeGpuRenderUniformBuffer.NumClusterPerSection - 1;
+	float2 ClampPosition = EdgeCluster ? min(Input.Position, SelfNonUniformLodSize) : Input.Position; //float2(EdgeCluster.x ? min(Input.Position.x, NonUniformLodSize.x) : Input.Position.x, EdgeCluster.y ? min(Input.Position.y, NonUniformLodSize.y) : Input.Position.y);
+	int2 ClmapPositionUint = int2(ClampPosition);
+	int4 LodDifference = int4(LodDataNeighbor) - int4(SelfLod, SelfLod, SelfLod, SelfLod);
+	
+	bool4 LodVarible = LodDifference > 0 && bool4
+	(
+		ClampPosition.y == SelfUniformLodSize.y || (ClampPosition.y == SelfNonUniformLodSize.y && EdgeCluster.y),
+		ClampPosition.x == 0,
+		ClampPosition.y == 0,
+		ClampPosition.x == SelfUniformLodSize.x || (ClampPosition.x == SelfNonUniformLodSize.x && EdgeCluster.x)
 	);
 	
-	float2 ClusterPositionSection = SectionOffset * LandscapeGpuRenderUniformBuffer.QuadSizeParameter.xx;
+	float4 NoUniformClampPosition = max(float4(((ClmapPositionUint.xyxy + int4(1, 1, 1, 1)) >> LodDifference) - int4(1, 1, 1, 1)), 0.f);
+	float4 NouniformLodSizeSIMD = float4(uint4(SelfAdjustQuadSize.xyxy) >> LodDifference) - 1.f;
+	float4 UniformClampPosition = float4(ClmapPositionUint.xyxy >> LodDifference);
+	float4 AdjustLodScaleSIMD = SelfLodScale.xyxy * float4(1 << LodDifference);
+	
+	//Optimize the code, see EdgeFunc function for details
+	ClampPosition = LodVarible.xw ? (EdgeCluster.xy ? NoUniformClampPosition.xw : UniformClampPosition.xw) : ClampPosition;
+	ClampPosition = LodVarible.zy ? (EdgeCluster.xy ? NoUniformClampPosition.zy : UniformClampPosition.zy) : ClampPosition;
+	//Regardless of whether direct calculation is used or not, save to NonUniformLodSize and AdjustLodScale
+	float2 NonUniformLodSize = LodVarible.xw ? NouniformLodSizeSIMD.xw : (LodVarible.zy ? NouniformLodSizeSIMD.zy : SelfNonUniformLodSize);
+	float2 AdjustLodScale = LodVarible.xw ? AdjustLodScaleSIMD.xw : (LodVarible.zy ? AdjustLodScaleSIMD.zy : SelfLodScale);
+	ClampPosition = EdgeCluster ? ClampPosition / NonUniformLodSize * (LandscapeGpuRenderUniformBuffer.QuadSizeParameter.x - 1.f) : ClampPosition * AdjustLodScale;
+	
+	uint2 SectionBlock = ClusterIndex.xy / LandscapeGpuRenderUniformBuffer.NumClusterPerSection;
+	float2 ClusterPositionSection = ClusterOffset * LandscapeGpuRenderUniformBuffer.QuadSizeParameter.xx;
 	float2 ClusterPositionGlobal = SectionBlock * LandscapeGpuRenderUniformBuffer.QuadSizeParameter.yy + ClusterPositionSection;
 	
 	Intermediates.LocalPosition = float3(ClampPosition + ClusterPositionGlobal, 0.f);
