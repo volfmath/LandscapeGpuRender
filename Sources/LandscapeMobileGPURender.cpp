@@ -29,6 +29,7 @@ void FMobileLandscapeGPURenderSystem_GameThread::RegisterGPURenderLandscapeEntit
 		const FLandscapeSubmitData& SubmitToRenderThreadComponentData = FLandscapeSubmitData::CreateLandscapeSubmitData(LandscapeComponent);
 
 		//At first, Submit to renderthread
+		//Put the code in front because FLandscapeGpuRenderProxyComponentSceneProxy will use data
 		ENQUEUE_RENDER_COMMAND(RegisterGPURenderLandscapeEntity)(
 			[SubmitToRenderThreadComponentData](FRHICommandList& RHICmdList) {
 				FMobileLandscapeGPURenderSystem_RenderThread::RegisterGPURenderLandscapeEntity_RenderThread(SubmitToRenderThreadComponentData);
@@ -54,17 +55,19 @@ void FMobileLandscapeGPURenderSystem_GameThread::RegisterGPURenderLandscapeEntit
 		else {
 			ULandscapeGpuRenderProxyComponent* ComponentRef = *ComponentPtr;
 			const auto& ComponentQuadBase = LandscapeComponent->GetSectionBase();
+			//#todo: function hide logic
 			FVector ComponentMaxBox = FVector(LandscapeComponent->CachedLocalBox.Max.X + ComponentQuadBase.X, LandscapeComponent->CachedLocalBox.Max.Y + ComponentQuadBase.Y, LandscapeComponent->CachedLocalBox.Max.Z);
 			ComponentRef->ProxyLocalBox += FBox(LandscapeComponent->CachedLocalBox.Min, ComponentMaxBox); //Calculate the boundingbox
 			ComponentRef->NumComponents += 1;
+			ComponentRef->CheckResources(LandscapeComponent);
 			//ComponentRef->CheckMaterial(LandscapeComponent); //Debug Only?
 		}
 
-		//RegisterTo FScene, call AddPrimitive
 		ULandscapeGpuRenderProxyComponent* ComponentRef = *ComponentPtr;
 		if (ComponentRef->NumComponents == NumComponents) {
-			//Maybe by InvalidateLightingCache called
+			//Maybe by InvalidateLightingCache called, so we need to check the status of register
 			if (!ComponentRef->IsRegistered()) {
+				//RegisterTo FScene, call AddPrimitive
 				ComponentRef->RegisterComponent();
 			}
 		}
@@ -295,6 +298,7 @@ FLandscapeGpuRenderProxyComponentSceneProxy::FLandscapeGpuRenderProxyComponentSc
 	, VertexFactory(nullptr)
 	, VertexBuffer(nullptr)
 	, LandscapeKey(InComponent->LandscapeKey)
+	, HeightmapTexture(InComponent->HeightmapTexture)
 {
 	check(GetScene().GetFeatureLevel() == ERHIFeatureLevel::ES3_1);
 	for (int32 i = 0; i < InComponent->MobileMaterialInterfaces.Num(); ++i) {
@@ -332,7 +336,20 @@ void FLandscapeGpuRenderProxyComponentSceneProxy::OnTransformChanged() {
 	FLandscapeGpuRenderUniformBuffer LandscapeGpuRenderParams;
 	LandscapeGpuRenderParams.NumClusterPerSection = NumClusterPerSection;
 	LandscapeGpuRenderParams.QuadSizeParameter = FVector2D(LandscapeGpuRenderParameter::ClusterQuadSize, SectionSizeQuads);
+
+	//Calculate the HeightmapUVParameter
+	FVector4 HeightmapUVParameter = FVector4(
+		((float)(SectionSizeQuads + 1) / (float)FMath::Max<int32>(1, HeightmapTexture->GetSizeX())),
+		((float)(SectionSizeQuads + 1) / (float)FMath::Max<int32>(1, HeightmapTexture->GetSizeY())),
+		1.0f / (float)HeightmapTexture->GetSizeX(), 
+		1.0f / (float)HeightmapTexture->GetSizeY()
+	);
+	LandscapeGpuRenderParams.HeightmapUVParameter = HeightmapUVParameter;
 	LandscapeGpuRenderParams.LocalToWorldNoScaling = LocalToWorldNoScaling;
+
+	//SetHeightmap
+	LandscapeGpuRenderParams.HeightmapTexture = HeightmapTexture->TextureReference.TextureReferenceRHI;
+	LandscapeGpuRenderParams.HeightmapTextureSampler = TStaticSamplerState<SF_Point>::GetRHI();
 
 	if (!LandscapeGpuRenderUniformBuffer.IsValid()) {
 		LandscapeGpuRenderUniformBuffer = TUniformBufferRef<FLandscapeGpuRenderUniformBuffer>::CreateUniformBufferImmediate(LandscapeGpuRenderParams, UniformBuffer_MultiFrame);
@@ -415,7 +432,7 @@ void FLandscapeGpuRenderProxyComponentSceneProxy::GetDynamicMeshElements(const T
 		MeshBatch.MaterialRenderProxy = MaterialInterface->GetRenderProxy();
 		MeshBatch.LCI = nullptr; //don't need to any bake info
 		MeshBatch.ReverseCulling = IsLocalToWorldDeterminantNegative();
-		MeshBatch.CastShadow = true; //值来自于FPrimitiveFlagsCompact, 所以这里无所谓
+		MeshBatch.CastShadow = true; //The value comes from FPrimitiveFlagsCompact, so it doesn’t matter here
 		MeshBatch.bUseForDepthPass = true;
 		MeshBatch.bUseAsOccluder = false;
 		MeshBatch.bUseForMaterial = true;

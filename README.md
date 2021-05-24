@@ -2,4 +2,7 @@
 
 - [x] Resources System
 - [x] Render Resources
-- [ ] DrawBatch
+- [x] Handle Heightmap
+- [ ] Generator BoundingBox
+- [ ] GPU Culling
+- [ ] Test InstanceOffset

@@ -21,7 +21,7 @@ class ULandscapeGpuRenderProxyComponent : public UPrimitiveComponent
 	ALandscapeProxy* GetLandscapeProxy() const;
 	void GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials, bool bGetDebugMaterials) const;
 	void Init(ULandscapeComponent* LandscapeComponent);
-
+	void CheckResources(ULandscapeComponent* LandscapeComponent);
 
 public:
 	//[Don't Serialize]
@@ -29,6 +29,9 @@ public:
 
 	//[Don't Serialize]
 	uint32 SectionSizeQuads;
+
+	//[Don't Serialize]
+	UTexture2D* HeightmapTexture; // PC : Heightmap, Mobile : Weightmap
 
 	//[Don't Serialize]
 	FBox ProxyLocalBox;

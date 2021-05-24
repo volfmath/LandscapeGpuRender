@@ -6,6 +6,7 @@
 ULandscapeGpuRenderProxyComponent::ULandscapeGpuRenderProxyComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 	, NumComponents(0)
+	, HeightmapTexture(nullptr)
 	, ProxyLocalBox(ForceInit)
 //#if WITH_EDITORONLY_DATA
 //	, CachedEditingLayerData(nullptr)
@@ -65,7 +66,13 @@ FBoxSphereBounds ULandscapeGpuRenderProxyComponent::CalcBounds(const FTransform&
 }
 
 FPrimitiveSceneProxy* ULandscapeGpuRenderProxyComponent::CreateSceneProxy() {
-	return new FLandscapeGpuRenderProxyComponentSceneProxy(this);
+	//May be called by the construct of default Uobject, So we need to check status
+	if (NumComponents != 0) {
+		return new FLandscapeGpuRenderProxyComponentSceneProxy(this);
+	}
+	else {
+		return nullptr;
+	}
 }
 
 void ULandscapeGpuRenderProxyComponent::Init(ULandscapeComponent* LandscapeComponent) {
@@ -90,6 +97,9 @@ void ULandscapeGpuRenderProxyComponent::Init(ULandscapeComponent* LandscapeCompo
 		MobileMaterialInterfaces.Emplace(TWeakObjectPtr<UMaterialInterface>(LandscapeComponent->MobileMaterialInterfaces[Index]));
 		check(MobileMaterialInterfaces[Index].IsValid());
 	}
+
+	//Save HeightMap
+	HeightmapTexture = LandscapeComponent->HeightmapTexture;
 
 	//Set transform
 	SetRelativeLocation(FVector::ZeroVector);
@@ -153,4 +163,9 @@ void ULandscapeGpuRenderProxyComponent::GetUsedMaterials(TArray<UMaterialInterfa
 //		OutMaterials.Add(GLandscapeDirtyMaterial);
 //	}
 //#endif
+}
+
+void ULandscapeGpuRenderProxyComponent::CheckResources(ULandscapeComponent* LandscapeComponent) {
+	check(HeightmapTexture != nullptr);
+	check(HeightmapTexture == LandscapeComponent->HeightmapTexture);
 }

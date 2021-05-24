@@ -11,7 +11,7 @@ struct FLandscapeGpuRenderUserData {
 	FRHIShaderResourceView* LandscapeGpuRenderOutputBufferSRV;
 };
 
-//压缩数据,天刀使用离线高度计算Bounding
+//
 struct FLandscapeClusterInputData_CPU {
 	FVector BoundCenter;
 	uint32 ClusterIndexX : 8; //0~255
@@ -23,7 +23,7 @@ struct FLandscapeClusterInputData_CPU {
 
 //HUAWEI Error?
 struct FLandscapeClusterOutputData_CPU {
-	uint32 ClusterIndexX : 8; //0~255
+	uint32 ClusterIndexX : 8; //0~255, 
 	uint32 ClusterIndexY : 8; //0~255
 	uint32 DownLod : 3;
 	uint32 LeftLod : 3;
@@ -49,8 +49,12 @@ struct FLandscapeGpuRenderProxyComponent_RenderThread {
 	FIntPoint LandscapeComponentMin;
 	FIntPoint LandscapeComponentSize;
 
-	//[Resources Manager]
+	//[Resources Ref]
 	FLandscapeGpuRenderUserData LandscapeGpuRenderUserData;
+
+	//[Resources Manager]
+
+	//[Resources Manager]
 	FRWBuffer IndirectDrawCommandBuffer_GPU;
 	FRWBufferStructured ClusterInputData_GPU;
 	FRWBuffer ClusterOutputData_GPU;

@@ -436,6 +436,7 @@ FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput In
 	//Optimize the code, see EdgeFunc function for details
 	ClampPosition = LodVarible.xw ? (EdgeCluster.xy ? NoUniformClampPosition.xw : UniformClampPosition.xw) : ClampPosition;
 	ClampPosition = LodVarible.zy ? (EdgeCluster.xy ? NoUniformClampPosition.zy : UniformClampPosition.zy) : ClampPosition;
+	
 	//Regardless of whether direct calculation is used or not, save to NonUniformLodSize and AdjustLodScale
 	float2 NonUniformLodSize = LodVarible.xw ? NouniformLodSizeSIMD.xw : (LodVarible.zy ? NouniformLodSizeSIMD.zy : SelfNonUniformLodSize);
 	float2 AdjustLodScale = LodVarible.xw ? AdjustLodScaleSIMD.xw : (LodVarible.zy ? AdjustLodScaleSIMD.zy : SelfLodScale);
@@ -443,9 +444,15 @@ FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput In
 	
 	uint2 SectionBlock = ClusterIndex.xy / LandscapeGpuRenderUniformBuffer.NumClusterPerSection;
 	float2 ClusterPositionSection = ClusterOffset * LandscapeGpuRenderUniformBuffer.QuadSizeParameter.xx;
-	float2 ClusterPositionGlobal = SectionBlock * LandscapeGpuRenderUniformBuffer.QuadSizeParameter.yy + ClusterPositionSection;
+	float2 PositionInSection = ClampPosition + ClusterPositionSection;
+	float2 ClusterPositionGlobal = SectionBlock * LandscapeGpuRenderUniformBuffer.QuadSizeParameter.yy;
 	
-	Intermediates.LocalPosition = float3(ClampPosition + ClusterPositionGlobal, 0.f);
+	//Sample Hiehgtmap
+	float2 SampleCoords = LandscapeGpuRenderUniformBuffer.HeightmapUVParameter.xy * SectionBlock + PositionInSection * LandscapeGpuRenderUniformBuffer.HeightmapUVParameter.zw + 0.5f * LandscapeGpuRenderUniformBuffer.HeightmapUVParameter.zw;
+	float4 SampleValue = Texture2DSampleLevel(LandscapeGpuRenderUniformBuffer.HeightmapTexture, LandscapeGpuRenderUniformBuffer.HeightmapTextureSampler, SampleCoords, 0);
+	float Height = DecodePackedHeight(SampleValue.xy);
+	
+	Intermediates.LocalPosition = float3(PositionInSection + ClusterPositionGlobal, Height);
 	Intermediates.WorldNormal = float3( 0.0, 0.0, 1.0 );
 	
 	return Intermediates;

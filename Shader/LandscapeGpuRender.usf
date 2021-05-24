@@ -1,0 +1,35 @@
+#include "Common.ush"
+
+float ComputeBoundsScreenRadiusSquared(const FVector4& BoundsOrigin, const float SphereRadius, const FVector4& ViewOrigin, const FMatrix& ProjMatrix)
+{
+	// ignore perspective foreshortening for orthographic projections
+	const float DistSqr = FVector::DistSquared(BoundsOrigin, ViewOrigin) * ProjMatrix.M[2][3];
+
+	// Get projection multiple accounting for view scaling.
+	const float ScreenMultiple = FMath::Max(0.5f * ProjMatrix.M[0][0], 0.5f * ProjMatrix.M[1][1]);
+
+	// Calculate screen-space projected radius
+	return FMath::Square(ScreenMultiple * SphereRadius) / FMath::Max(1.0f, DistSqr);
+}
+
+uint GetLODFromScreenSize(LODSettingsComponent LODSettings, float InScreenSizeSquared, float InViewLODScale, float& OutFractionalLOD)
+{
+	float ScreenSizeSquared = InScreenSizeSquared / InViewLODScale;
+		
+	if (ScreenSizeSquared <= LODSettings.LastLODScreenSizeSquared)
+	{
+		OutFractionalLOD = LODSettings.LastLODIndex;
+		return LODSettings.LastLODIndex;
+	}
+	else if (ScreenSizeSquared > LODSettings.LOD1ScreenSizeSquared)
+	{
+		OutFractionalLOD = (LODSettings.LOD0ScreenSizeSquared - FMath::Min(ScreenSizeSquared, LODSettings.LOD0ScreenSizeSquared)) / (LODSettings.LOD0ScreenSizeSquared - LODSettings.LOD1ScreenSizeSquared);
+		return 0;
+	}
+	else
+	{
+			// No longer linear fraction, but worth the cache misses
+		OutFractionalLOD = 1 + FMath::LogX(LODSettings.LODOnePlusDistributionScalarSquared, LODSettings.LOD1ScreenSizeSquared / ScreenSizeSquared);
+		return (int8) OutFractionalLOD;
+	}
+}

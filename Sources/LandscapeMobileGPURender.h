@@ -14,7 +14,10 @@ struct FLandscapeClusterVertex;
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeGpuRenderUniformBuffer, LANDSCAPE_API)
 	SHADER_PARAMETER(int32, NumClusterPerSection)
 	SHADER_PARAMETER(FVector2D, QuadSizeParameter)
+	SHADER_PARAMETER(FVector4, HeightmapUVParameter)
 	SHADER_PARAMETER(FMatrix, LocalToWorldNoScaling)
+	SHADER_PARAMETER_TEXTURE(Texture2D, HeightmapTexture)
+	SHADER_PARAMETER_SAMPLER(SamplerState, HeightmapTextureSampler)
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 //Submit to landscape data
@@ -142,12 +145,15 @@ public:
 	//[Resources Manager]
 	TArray<FIndexBuffer*> IndexBuffers;
 
-	//[Resources Manager]
+	//[Resources Manager, Auto Release]
 	TUniformBufferRef<FLandscapeGpuRenderUniformBuffer> LandscapeGpuRenderUniformBuffer;
 	//TUniformBuffer<FLandscapeGpuRenderUniformBuffer> LandscapeGpuRenderUniformBuffer; //TUniformBuffer will store a copy of Content in memory, no need
 
 	//[Resources Value]
 	FGuid LandscapeKey;
+
+	//[Resources Ref]
+	UTexture2D* HeightmapTexture; // PC : Heightmap, Mobile : Weightmap
 
 	//[Resources Ref]
 	TArray<UMaterialInterface*> AvailableMaterials;//Mobile Material, 
