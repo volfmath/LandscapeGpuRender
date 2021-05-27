@@ -28,6 +28,7 @@ struct FLandscapeSubmitData {
 	uint32 ClusterSizePerSection;
 	FIntPoint ComponentBase;
 	FGuid LandscapeKey;
+	FVector4 LodSettingParameters;
 };
 
 struct FMobileLandscapeGPURenderSystem_GameThread {
@@ -41,25 +42,6 @@ struct FMobileLandscapeGPURenderSystem_GameThread {
 	uint32 NumAllRegisterComponents_GameThread; //the sum of the Entity numbers of all Landscapes, note that System may have multiple Landscapes
 	TMap<FGuid, ULandscapeGpuRenderProxyComponent*> LandscapeGpuRenderPeoxyComponens_GameThread; //Resources Manager
 };
-
-//Per ClusterVertexData
-struct FLandscapeClusterVertex
-{
-	//uint8 PositionX;
-	//uint8 PositionY;
-	//uint8 Blank_0; //Blank Data
-	//uint8 Blank_1; //Blank Data
-
-	float PositionX;
-	float PositionY;
-};
-
-namespace LandscapeGpuRenderParameter {
-	static constexpr uint8 ClusterQuadSize = 16;
-	static constexpr uint8 ClusterLod = 5;
-	static constexpr uint8 FirstLod = 0;
-	static constexpr uint32 ClusterVertexDataSize = ClusterQuadSize * sizeof(FLandscapeClusterVertex);
-}
 
 class FLandscapeGpuRenderVertexFactory : public FVertexFactory
 {
@@ -163,7 +145,7 @@ public:
 
 	SIZE_T GetTypeHash() const override;
 	FLandscapeGpuRenderProxyComponentSceneProxy(ULandscapeGpuRenderProxyComponent* InComponent);
-	~FLandscapeGpuRenderProxyComponentSceneProxy();
+	virtual ~FLandscapeGpuRenderProxyComponentSceneProxy();
 
 	// FPrimitiveSceneProxy interface.
 	virtual void ApplyWorldOffset(FVector InOffset) override;

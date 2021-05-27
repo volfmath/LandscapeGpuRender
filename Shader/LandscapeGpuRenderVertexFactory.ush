@@ -443,8 +443,7 @@ FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput In
 	ClampPosition = EdgeCluster ? ClampPosition / NonUniformLodSize * (LandscapeGpuRenderUniformBuffer.QuadSizeParameter.x - 1.f) : ClampPosition * AdjustLodScale;
 	
 	uint2 SectionBlock = ClusterIndex.xy / LandscapeGpuRenderUniformBuffer.NumClusterPerSection;
-	float2 ClusterPositionSection = ClusterOffset * LandscapeGpuRenderUniformBuffer.QuadSizeParameter.xx;
-	float2 PositionInSection = ClampPosition + ClusterPositionSection;
+	float2 PositionInSection = ClampPosition + ClusterOffset * LandscapeGpuRenderUniformBuffer.QuadSizeParameter.xx;
 	float2 ClusterPositionGlobal = SectionBlock * LandscapeGpuRenderUniformBuffer.QuadSizeParameter.yy;
 	
 	//Sample Hiehgtmap

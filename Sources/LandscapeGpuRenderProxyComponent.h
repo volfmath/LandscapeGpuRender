@@ -2,6 +2,7 @@
 #include "CoreMinimal.h"
 #include "Materials/MaterialInterface.h"
 #include "UObject/WeakObjectPtrTemplates.h"
+#include "LandscapeMobileGPURender.h"
 
 #include "LandscapeGpuRenderProxyComponent.generated.h"
 
@@ -21,11 +22,20 @@ class ULandscapeGpuRenderProxyComponent : public UPrimitiveComponent
 	ALandscapeProxy* GetLandscapeProxy() const;
 	void GetUsedMaterials(TArray<UMaterialInterface*>& OutMaterials, bool bGetDebugMaterials) const;
 	void Init(ULandscapeComponent* LandscapeComponent);
+	void UpdateBoundingInformation(const FBox& ComponentCachedLocalBox, const FIntPoint& ComponentQuadBase);
 	void CheckResources(ULandscapeComponent* LandscapeComponent);
+	void CreateClusterBounding(const FLandscapeSubmitData& LandscapeSubmitData);
+	inline bool IsClusterBoundingCreated() const { return bIsClusterBoundingCreated; }
 
 public:
 	//[Don't Serialize]
+	bool bIsClusterBoundingCreated;
+
+	//[Don't Serialize]
 	uint32 NumComponents;
+
+	//[Don't Serialize]
+	uint32 ComponentSectionSize;
 
 	//[Don't Serialize]
 	uint32 SectionSizeQuads;

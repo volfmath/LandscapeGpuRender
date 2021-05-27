@@ -54,13 +54,9 @@ void FMobileLandscapeGPURenderSystem_GameThread::RegisterGPURenderLandscapeEntit
 		}
 		else {
 			ULandscapeGpuRenderProxyComponent* ComponentRef = *ComponentPtr;
-			const auto& ComponentQuadBase = LandscapeComponent->GetSectionBase();
-			//#todo: function hide logic
-			FVector ComponentMaxBox = FVector(LandscapeComponent->CachedLocalBox.Max.X + ComponentQuadBase.X, LandscapeComponent->CachedLocalBox.Max.Y + ComponentQuadBase.Y, LandscapeComponent->CachedLocalBox.Max.Z);
-			ComponentRef->ProxyLocalBox += FBox(LandscapeComponent->CachedLocalBox.Min, ComponentMaxBox); //Calculate the boundingbox
-			ComponentRef->NumComponents += 1;
+			ComponentRef->UpdateBoundingInformation(LandscapeComponent->CachedLocalBox, LandscapeComponent->GetSectionBase());
+			//Check resources
 			ComponentRef->CheckResources(LandscapeComponent);
-			//ComponentRef->CheckMaterial(LandscapeComponent); //Debug Only?
 		}
 
 		ULandscapeGpuRenderProxyComponent* ComponentRef = *ComponentPtr;
@@ -69,6 +65,10 @@ void FMobileLandscapeGPURenderSystem_GameThread::RegisterGPURenderLandscapeEntit
 			if (!ComponentRef->IsRegistered()) {
 				//RegisterTo FScene, call AddPrimitive
 				ComponentRef->RegisterComponent();
+			}
+
+			if (!ComponentRef->IsClusterBoundingCreated()) {
+				ComponentRef->CreateClusterBounding(SubmitToRenderThreadComponentData);
 			}
 		}
 	}
@@ -118,6 +118,37 @@ FLandscapeSubmitData FLandscapeSubmitData::CreateLandscapeSubmitData(ULandscapeC
 	RetSubmitData.ClusterSizePerSection = (LandscapeComponent->SubsectionSizeQuads + 1) / LandscapeGpuRenderParameter::ClusterQuadSize;
 	RetSubmitData.ComponentBase = LandscapeComponent->GetSectionBase() / LandscapeComponent->ComponentSizeQuads;
 	RetSubmitData.LandscapeKey = LandscapeComponent->GetLandscapeProxy()->GetLandscapeGuid();
+
+	//LodParameters
+	{
+		//No need for LOD0ScreenSizeSquared, because it is not used to calculate integer LOD
+		//LOD0
+		const auto NumClusterLod = FMath::CeilLogTwo(LandscapeGpuRenderParameter::ClusterQuadSize) + 1;
+		const auto NumSectionLod = FMath::CeilLogTwo(LandscapeComponent->SubsectionSizeQuads + 1);
+		check(NumSectionLod > NumClusterLod);
+
+		//面积递减系数为ScreenSizeRatioDivider
+		float ScreenSizeRatioDivider = FMath::Max(LandscapeComponent->GetLandscapeProxy()->LOD0DistributionSetting, 1.01f);
+		float CurrentScreenSizeRatio = LandscapeComponent->GetLandscapeProxy()->LOD0ScreenSize;
+		uint8 LastLODIndex = LandscapeGpuRenderParameter::ClusterLod;
+		float LOD0ScreenSizeSquared = FMath::Square(CurrentScreenSizeRatio);
+
+		//LOD1
+		CurrentScreenSizeRatio /= ScreenSizeRatioDivider;
+		float LOD1ScreenSizeSquared = FMath::Square(CurrentScreenSizeRatio);
+
+		//Other Lod
+		ScreenSizeRatioDivider = FMath::Max(LandscapeComponent->GetLandscapeProxy()->LODDistributionSetting, 1.01f);
+		float LODOnePlusDistributionScalarSquared = FMath::Square(ScreenSizeRatioDivider);
+		for (uint32 i = 1; i < NumClusterLod; ++i) {
+			CurrentScreenSizeRatio /= ScreenSizeRatioDivider;
+		}
+		float LastLODScreenSizeSquared = FMath::Square(CurrentScreenSizeRatio);
+		
+		//(LastLODScreenSizeSquared, LOD1ScreenSizeSquared, LODOnePlusDistributionScalarSquared, LastLODIndex)
+		RetSubmitData.LodSettingParameters = FVector4(LastLODScreenSizeSquared, LOD1ScreenSizeSquared, LODOnePlusDistributionScalarSquared, LastLODIndex);
+	}
+
 	return RetSubmitData;
 }
 
@@ -426,6 +457,14 @@ void FLandscapeGpuRenderProxyComponentSceneProxy::GetDynamicMeshElements(const T
 
 	UMaterialInterface* MaterialInterface = AvailableMaterials[0];
 	const auto& GpuRenderData = FMobileLandscapeGPURenderSystem_RenderThread::GetLandscapeGPURenderComponent_RenderThread(UniqueWorldId, LandscapeKey);
+
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
+	if (ViewFamily.EngineShowFlags.Bounds) {
+		for (const FBoxSphereBounds& DrawBounds : GpuRenderData.WorldClusterBounds) {
+			DrawWireBox(Collector.GetPDI(0), DrawBounds.GetBox(), FColor(72, 72, 255), SDPG_World);
+		}		
+	}
+#endif
 	for (int LodIndex = 0; LodIndex < LandscapeGpuRenderParameter::ClusterLod; ++LodIndex) {
 		FMeshBatch& MeshBatch = Collector.AllocateMesh();
 		MeshBatch.VertexFactory = VertexFactory;

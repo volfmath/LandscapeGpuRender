@@ -1,35 +1,179 @@
 #include "Common.ush"
 
-float ComputeBoundsScreenRadiusSquared(const FVector4& BoundsOrigin, const float SphereRadius, const FVector4& ViewOrigin, const FMatrix& ProjMatrix)
+#define GROUP_TILE_SIZE     64
+#define GROUP_TILE_SIZE_1	8
+#define DRAWCOMMAND_SIZE	5
+
+//[Input]
+/* Layout
+float3 ViewOriginPosition;
+float4 ProjMatrixParameters; (ProjMatrix.M[0][0], ProjMatrix.M[1][1], ProjMatrix.M[2][3], ClusterSqureSizePerComponent)
+float4 LODSettingsComponent; (LastLODScreenSizeSquared, LOD1ScreenSizeSquared, LODOnePlusDistributionScalarSquared, LastLODIndex)
+*/
+float4 LodCSParameters[3];
+Buffer<float4> ComponentsOriginAndRadiusSRV;
+
+//[Output]
+RWBuffer<uint> ClusterLodBufferUAV;
+
+float ComputeBoundsScreenRadiusSquared(float4 OriginAndRadius)
 {
 	// ignore perspective foreshortening for orthographic projections
-	const float DistSqr = FVector::DistSquared(BoundsOrigin, ViewOrigin) * ProjMatrix.M[2][3];
+	// const float DistSqr = FVector::DistSquared(BoundsOrigin, ViewOrigin) * ProjMatrix.M[2][3];
+	float3 ViewOriginPosition = LodCSParameters[0].xyz;
+	float3 ProjMatrixParameters = LodCSParameters[1].xyz;
+	const float DistSqr = dot(ViewOriginPosition - OriginAndRadius.xyz, ViewOriginPosition - OriginAndRadius.xyz) * ProjMatrixParameters.z;
 
 	// Get projection multiple accounting for view scaling.
-	const float ScreenMultiple = FMath::Max(0.5f * ProjMatrix.M[0][0], 0.5f * ProjMatrix.M[1][1]);
+	const float ScreenMultiple = max(0.5f * ProjMatrixParameters.x, 0.5f * ProjMatrixParameters.y);
 
 	// Calculate screen-space projected radius
-	return FMath::Square(ScreenMultiple * SphereRadius) / FMath::Max(1.0f, DistSqr);
+	return Square(ScreenMultiple * OriginAndRadius.w) / max(1.0f, DistSqr);
 }
 
-uint GetLODFromScreenSize(LODSettingsComponent LODSettings, float InScreenSizeSquared, float InViewLODScale, float& OutFractionalLOD)
+uint GetLODFromScreenSize(float InScreenSizeSquared)
 {
-	float ScreenSizeSquared = InScreenSizeSquared / InViewLODScale;
+	//LODDistanceFactor Don't consider LODScale for now
+	//float ScreenSizeSquared = InScreenSizeSquared / InViewLODScale;
+	float ScreenSizeSquared = InScreenSizeSquared;
+	float4 LODSettings = LodCSParameters[2];
+	
+	uint CurLod = ScreenSizeSquared <= LODSettings.x ? (uint) LODSettings.w
+					: ScreenSizeSquared > LODSettings.y ? 0
+						: (1 + log2(LODSettings.y / ScreenSizeSquared) / log2(LODSettings.z));
+	
+	return CurLod;
+}
+
+[numthreads(GROUP_TILE_SIZE, 1, 1)]
+void ClusterComputeLODCS(uint DispatchThreadId : SV_DispatchThreadID)
+{
+	float BoundsScreenRadiusSquared = ComputeBoundsScreenRadiusSquared(ComponentsOriginAndRadiusSRV[DispatchThreadId]);
+	uint Lod = GetLODFromScreenSize(BoundsScreenRadiusSquared);
+	uint ClusterSqureSizePerComponent = (uint)LodCSParameters[1].w;
+	uint StartClusterIndex = DispatchThreadId * ClusterSqureSizePerComponent;
+	
+	LOOP
+	for (uint ClusterIndex = 0; ClusterIndex < ClusterSqureSizePerComponent; ++ClusterIndex)
+	{
+		ClusterLodBufferUAV[StartClusterIndex + ClusterIndex] = Lod;
+	}
+}
+
+//[Input]
+struct ClusterInputData
+{
+	float3 BoundCenter;
+	
+	float3 BoundExtent;
+};
+
+float4 ViewFrustumPermutedPlanes[8];
+uint TotalCluster;
+uint ClusterSizePerComponent;
+uint2 LandscapeComponentSize;
+StructuredBuffer<ClusterInputData> ClusterInputData_SRV;
+Buffer<uint> ClusterLodBufferSRV;
+
+//[Output]
+RWBuffer<uint> ClusterOutBufferUAV;
+RWBuffer<uint> DrawCommandBufferUAV;
+
+bool IntersectBox8Plane(in float3 Center, in float3 Extent, out bool InsideNearPlane)
+{
+	float4 DistX_0 = Center.xxxx * ViewFrustumPermutedPlanes[0];
+	float4 DistY_0 = Center.yyyy * ViewFrustumPermutedPlanes[1] + DistX_0;
+	float4 DistZ_0 = Center.zzzz * ViewFrustumPermutedPlanes[2] + DistY_0;
+	float4 Distance_0 = DistZ_0 - ViewFrustumPermutedPlanes[3];
+    
+	float4 PushX_0 = Extent.xxxx * abs(ViewFrustumPermutedPlanes[0]);
+	float4 PushY_0 = Extent.yyyy * abs(ViewFrustumPermutedPlanes[1]) + PushX_0;
+	float4 PushOut_0 = Extent.zzzz * abs(ViewFrustumPermutedPlanes[2]) + PushY_0;
+
+	if (any(Distance_0 > PushOut_0))
+	{
+		return false;
+	}
+
+	InsideNearPlane = Distance_0.x < -PushOut_0.x;
+    
+	float4 DistX_1 = Center.xxxx * ViewFrustumPermutedPlanes[4];
+	float4 DistY_1 = Center.yyyy * ViewFrustumPermutedPlanes[5] + DistX_1;
+	float4 DistZ_1 = Center.zzzz * ViewFrustumPermutedPlanes[6] + DistY_1;
+	float4 Distance_1 = DistZ_1 - ViewFrustumPermutedPlanes[7];
+    
+	float4 PushX_1 = Extent.xxxx * abs(ViewFrustumPermutedPlanes[4]);
+	float4 PushY_1 = Extent.yyyy * abs(ViewFrustumPermutedPlanes[5]) + PushX_1;
+	float4 PushOut_1 = Extent.zzzz * abs(ViewFrustumPermutedPlanes[6]) + PushY_1;
+    
+	if (any(Distance_1 > PushOut_1))
+	{
+		return false;
+	}
+    
+	return true;
+}
+
+uint GetLinearIndexByClusterIndex(in int2 ClusterIndex)
+{
+	uint2 ClampSize = clamp(ClusterIndex, int2(0, 0), int2(LandscapeComponentSize * ClusterSizePerComponent) - int2(1, 1));
+	uint ClusterSqureSizePerComponent = ClusterSizePerComponent * ClusterSizePerComponent;
+	uint2 ClusterOffset = ClampSize & (ClusterSizePerComponent - 1);
+	uint2 ComponentOffset = ClampSize / ClusterSizePerComponent;
+	
+	uint offset_1 = ComponentOffset.y * ClusterSqureSizePerComponent * LandscapeComponentSize.x + ComponentOffset.x * ClusterSqureSizePerComponent;
+	uint offset_2 = ClusterOffset.x + ClusterOffset.y * ClusterSizePerComponent;
+	
+	return offset_1 + offset_2;
+}
+
+uint2 GetLinearIndexByClusterIndexBatch(in uint4 ClusterIndex)
+{
+	uint4 ClampSize = clamp((int4) ClusterIndex, int4(0, 0, 0, 0), int4(LandscapeComponentSize.xyxy * ClusterSizePerComponent) - int4(1, 1, 1, 1));
+	uint4 ClusterOffset = ClampSize & (ClusterSizePerComponent - 1);
+	uint4 ComponentOffset = ClampSize / ClusterSizePerComponent;
+	uint ClusterSqureSizePerComponent = ClusterSizePerComponent * ClusterSizePerComponent;
+	uint2 offset_1 = ComponentOffset.yw * ClusterSqureSizePerComponent * LandscapeComponentSize.x + ComponentOffset.xz * ClusterSqureSizePerComponent;
+	uint2 offset_2 = ClusterOffset.xz + ClusterOffset.yw * ClusterSizePerComponent;
+	
+	return offset_1 + offset_2;
+}
+
+[numthreads(GROUP_TILE_SIZE_1, GROUP_TILE_SIZE_1, 1)]
+void LandscapeGpuCullingCS(uint2 DispatchThreadId : SV_DispatchThreadID)
+{
+	//保证一个Wrap访问的内存连续, Cache friend
+	uint CenterLinearIndex = GetLinearIndexByClusterIndex(DispatchThreadId);
+	ClusterInputData RenderData = ClusterInputData_SRV[CenterLinearIndex];
+	uint ClusterLod = ClusterLodBufferSRV[CenterLinearIndex];
+	bool InsideNearPlane;
+	bool bIsFrustumVisible = IntersectBox8Plane(RenderData.BoundCenter, RenderData.BoundExtent, InsideNearPlane);
+	
+	BRANCH
+	if (!bIsFrustumVisible)
+	{
+		return;
+	}
+	
+	//打包对应数据到输出数据中
+	uint PackOutputData = 0;
+	uint DownLod = ClusterInputData_SRV[GetLinearIndexByClusterIndex(int2(0, 1) + (int2)DispatchThreadId)];
+	uint LeftLod = ClusterInputData_SRV[GetLinearIndexByClusterIndex(int2(-1, 0) + (int2) DispatchThreadId)];
+	uint TopLod = ClusterInputData_SRV[GetLinearIndexByClusterIndex(int2(0, -1) + (int2) DispatchThreadId)];
+	uint RightLod = ClusterInputData_SRV[GetLinearIndexByClusterIndex(int2(1, 0) + (int2) DispatchThreadId)];
+	
+	PackOutputData = PackOutputData | (DispatchThreadId.x & 0xFF);
+	PackOutputData = PackOutputData | ((DispatchThreadId.y << 8) & 0xFF00); // There may be an error in the ARM register?
+	PackOutputData = PackOutputData | ((DownLod << 16) & 0x70000);
+	PackOutputData = PackOutputData | ((LeftLod << 19) & 0x380000);
+	PackOutputData = PackOutputData | ((TopLod << 22) & 0x1C0000);
+	PackOutputData = PackOutputData | ((RightLod << 25) & 0xE000000);
+	PackOutputData = PackOutputData | ((ClusterLod << 28) & 0x70000000);
 		
-	if (ScreenSizeSquared <= LODSettings.LastLODScreenSizeSquared)
-	{
-		OutFractionalLOD = LODSettings.LastLODIndex;
-		return LODSettings.LastLODIndex;
-	}
-	else if (ScreenSizeSquared > LODSettings.LOD1ScreenSizeSquared)
-	{
-		OutFractionalLOD = (LODSettings.LOD0ScreenSizeSquared - FMath::Min(ScreenSizeSquared, LODSettings.LOD0ScreenSizeSquared)) / (LODSettings.LOD0ScreenSizeSquared - LODSettings.LOD1ScreenSizeSquared);
-		return 0;
-	}
-	else
-	{
-			// No longer linear fraction, but worth the cache misses
-		OutFractionalLOD = 1 + FMath::LogX(LODSettings.LODOnePlusDistributionScalarSquared, LODSettings.LOD1ScreenSizeSquared / ScreenSizeSquared);
-		return (int8) OutFractionalLOD;
-	}
+	//计算对应LOD级别的offset
+	uint IndirectDrawInstanceCountIndex = ClusterLod * DRAWCOMMAND_SIZE * 1; //InstanceCount 
+	uint OutPutOffset = ClusterLod * TotalCluster;
+	uint CurrentLodCount = 0;
+	InterlockedAdd(DrawCommandBufferUAV[IndirectDrawInstanceCountIndex], 1, CurrentLodCount);
+	ClusterOutBufferUAV[CurrentLodCount + OutPutOffset] = PackOutputData;
 }
