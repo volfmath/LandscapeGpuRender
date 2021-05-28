@@ -3,6 +3,7 @@
 #include "RHIUtilities.h"
 
 extern ENGINE_API TAutoConsoleVariable<int32> CVarMobileLandscapeGpuRender;
+extern ENGINE_API TAutoConsoleVariable<int32> CVarMobileComputeShaderControl;
 
 struct FLandscapeSubmitData;
 
@@ -20,7 +21,7 @@ struct FLandscapeClusterVertex
 
 namespace LandscapeGpuRenderParameter {
 	static constexpr uint8 ClusterQuadSize = 16;
-	static constexpr uint8 ClusterLod = 5;
+	static constexpr uint8 ClusterLodCount = 5;
 	static constexpr uint8 FirstLod = 0;
 	static constexpr uint32 ClusterVertexDataSize = ClusterQuadSize * sizeof(FLandscapeClusterVertex);
 }
@@ -28,6 +29,7 @@ namespace LandscapeGpuRenderParameter {
 struct FLandscapeGpuRenderUserData {
 	FRHIUniformBuffer* LandscapeGpuRenderUniformBuffer;
 	FRHIShaderResourceView* LandscapeGpuRenderOutputBufferSRV;
+	FRHIShaderResourceView* LandscapeGpuRenderFirstIndexSRV;
 };
 
 //Because cs write, cache friend 
@@ -38,15 +40,13 @@ struct FLandscapeClusterLODData_CPU {
 //
 struct FLandscapeClusterInputData_CPU {
 	FVector BoundCenter;
-	uint32 ClusterIndexX : 8; //0~255
-	uint32 ClusterIndexY : 8; //0~255
-	uint32 ComponentIndexX : 8;
-	uint32 ComponentIndexY : 8;
+	float Pad_0;
 	FVector BoundExtent;
+	float Pad_1;
 };
 
 //HUAWEI Error?
-struct FLandscapeClusterOutputData_CPU {
+struct FLandscapeClusterPackData_CPU {
 	uint32 ClusterIndexX : 8; //0~255, 
 	uint32 ClusterIndexY : 8; //0~255
 	uint32 DownLod : 3;
@@ -72,6 +72,8 @@ struct FLandscapeGpuRenderProxyComponent_RenderThread {
 	//Just Write once
 	uint32 NumSections;
 	uint32 ClusterSizePerSection;
+	uint32 ClusterSizeX; //Store the total size to avoid recalculation every frame
+	uint32 ClusterSizeY; //Store the total size to avoid recalculation every frame
 	FVector4 LodSettingParameters;
 
 	//Write multiple times
@@ -91,10 +93,11 @@ struct FLandscapeGpuRenderProxyComponent_RenderThread {
 	//[Resources Manager]
 	FRWBuffer LandscapeClusterLODData_GPU;
 	FReadBuffer ComponentOriginAndRadius_GPU;
-
-	FRWBuffer IndirectDrawCommandBuffer_GPU;
-	FRWBufferStructured ClusterInputData_GPU;
+	FRWBufferStructured ClusterInputData_GPU; //#todo: Read Only
 	FRWBuffer ClusterOutputData_GPU;
+	FRWBuffer ClusterLodCountUAV_GPU;
+	FRWBuffer OrderClusterOutBufferUAV_GPU;
+	FRWBuffer IndirectDrawCommandBuffer_GPU;
 };
 
 /**

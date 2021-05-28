@@ -15,6 +15,7 @@ Buffer<float4> ComponentsOriginAndRadiusSRV;
 
 //[Output]
 RWBuffer<uint> ClusterLodBufferUAV;
+RWBuffer<uint> ClusterLodCountUAV_0;
 
 float ComputeBoundsScreenRadiusSquared(float4 OriginAndRadius)
 {
@@ -31,14 +32,14 @@ float ComputeBoundsScreenRadiusSquared(float4 OriginAndRadius)
 	return Square(ScreenMultiple * OriginAndRadius.w) / max(1.0f, DistSqr);
 }
 
-uint GetLODFromScreenSize(float InScreenSizeSquared)
+uint GetLODFromScreenSize(float InScreenSizeSquared, const uint LastLodIndex)
 {
 	//LODDistanceFactor Don't consider LODScale for now
 	//float ScreenSizeSquared = InScreenSizeSquared / InViewLODScale;
 	float ScreenSizeSquared = InScreenSizeSquared;
 	float4 LODSettings = LodCSParameters[2];
 	
-	uint CurLod = ScreenSizeSquared <= LODSettings.x ? (uint) LODSettings.w
+	uint CurLod = ScreenSizeSquared <= LODSettings.x ? LastLodIndex
 					: ScreenSizeSquared > LODSettings.y ? 0
 						: (1 + log2(LODSettings.y / ScreenSizeSquared) / log2(LODSettings.z));
 	
@@ -49,7 +50,8 @@ uint GetLODFromScreenSize(float InScreenSizeSquared)
 void ClusterComputeLODCS(uint DispatchThreadId : SV_DispatchThreadID)
 {
 	float BoundsScreenRadiusSquared = ComputeBoundsScreenRadiusSquared(ComponentsOriginAndRadiusSRV[DispatchThreadId]);
-	uint Lod = GetLODFromScreenSize(BoundsScreenRadiusSquared);
+	uint LastLodIndex = (uint) LodCSParameters[2].w;
+	uint Lod = GetLODFromScreenSize(BoundsScreenRadiusSquared, LastLodIndex);
 	uint ClusterSqureSizePerComponent = (uint)LodCSParameters[1].w;
 	uint StartClusterIndex = DispatchThreadId * ClusterSqureSizePerComponent;
 	
@@ -58,26 +60,34 @@ void ClusterComputeLODCS(uint DispatchThreadId : SV_DispatchThreadID)
 	{
 		ClusterLodBufferUAV[StartClusterIndex + ClusterIndex] = Lod;
 	}
+	
+	//Clear EntityCountBuffer
+	if (DispatchThreadId <= LastLodIndex)
+	{
+		ClusterLodCountUAV_0[DispatchThreadId] = 0;
+	}
 }
 
 //[Input]
 struct ClusterInputData
 {
 	float3 BoundCenter;
-	
+	float Pad_0;
 	float3 BoundExtent;
+	float Pad_1;
 };
 
 float4 ViewFrustumPermutedPlanes[8];
-uint TotalCluster;
-uint ClusterSizePerComponent;
-uint2 LandscapeComponentSize;
-StructuredBuffer<ClusterInputData> ClusterInputData_SRV;
+uint4 LandscapeParameters; //(LandscapeParameters.xy, LandscapeParameters.z, 0)
+//uint LandscapeParameters.z;
+//uint2 LandscapeComponentSize;
 Buffer<uint> ClusterLodBufferSRV;
+StructuredBuffer<ClusterInputData> ClusterInputData_SRV;
 
 //[Output]
-RWBuffer<uint> ClusterOutBufferUAV;
-RWBuffer<uint> DrawCommandBufferUAV;
+RWBuffer<uint2> ClusterOutBufferUAV;
+RWBuffer<uint> ClusterLodCountUAV;
+
 
 bool IntersectBox8Plane(in float3 Center, in float3 Extent, out bool InsideNearPlane)
 {
@@ -116,26 +126,23 @@ bool IntersectBox8Plane(in float3 Center, in float3 Extent, out bool InsideNearP
 
 uint GetLinearIndexByClusterIndex(in int2 ClusterIndex)
 {
-	uint2 ClampSize = clamp(ClusterIndex, int2(0, 0), int2(LandscapeComponentSize * ClusterSizePerComponent) - int2(1, 1));
-	uint ClusterSqureSizePerComponent = ClusterSizePerComponent * ClusterSizePerComponent;
-	uint2 ClusterOffset = ClampSize & (ClusterSizePerComponent - 1);
-	uint2 ComponentOffset = ClampSize / ClusterSizePerComponent;
-	
-	uint offset_1 = ComponentOffset.y * ClusterSqureSizePerComponent * LandscapeComponentSize.x + ComponentOffset.x * ClusterSqureSizePerComponent;
-	uint offset_2 = ClusterOffset.x + ClusterOffset.y * ClusterSizePerComponent;
-	
+	uint2 ClampSize = clamp(ClusterIndex, int2(0, 0), int2(LandscapeParameters.xy * LandscapeParameters.z) - int2(1, 1));
+	uint ClusterSqureSizePerComponent = LandscapeParameters.z * LandscapeParameters.z;
+	uint2 ClusterOffset = ClampSize & (LandscapeParameters.z - 1);
+	uint2 ComponentOffset = ClampSize / LandscapeParameters.z;
+	uint offset_1 = ComponentOffset.y * ClusterSqureSizePerComponent * LandscapeParameters.xy.x + ComponentOffset.x * ClusterSqureSizePerComponent;
+	uint offset_2 = ClusterOffset.x + ClusterOffset.y * LandscapeParameters.z;
 	return offset_1 + offset_2;
 }
 
 uint2 GetLinearIndexByClusterIndexBatch(in uint4 ClusterIndex)
 {
-	uint4 ClampSize = clamp((int4) ClusterIndex, int4(0, 0, 0, 0), int4(LandscapeComponentSize.xyxy * ClusterSizePerComponent) - int4(1, 1, 1, 1));
-	uint4 ClusterOffset = ClampSize & (ClusterSizePerComponent - 1);
-	uint4 ComponentOffset = ClampSize / ClusterSizePerComponent;
-	uint ClusterSqureSizePerComponent = ClusterSizePerComponent * ClusterSizePerComponent;
-	uint2 offset_1 = ComponentOffset.yw * ClusterSqureSizePerComponent * LandscapeComponentSize.x + ComponentOffset.xz * ClusterSqureSizePerComponent;
-	uint2 offset_2 = ClusterOffset.xz + ClusterOffset.yw * ClusterSizePerComponent;
-	
+	uint4 ClampSize = clamp((int4) ClusterIndex, int4(0, 0, 0, 0), int4(LandscapeParameters.xyxy * LandscapeParameters.z) - int4(1, 1, 1, 1));
+	uint4 ClusterOffset = ClampSize & (LandscapeParameters.z - 1);
+	uint4 ComponentOffset = ClampSize / LandscapeParameters.z;
+	uint ClusterSqureSizePerComponent = LandscapeParameters.z * LandscapeParameters.z;
+	uint2 offset_1 = ComponentOffset.yw * ClusterSqureSizePerComponent * LandscapeParameters.xy.x + ComponentOffset.xz * ClusterSqureSizePerComponent;
+	uint2 offset_2 = ClusterOffset.xz + ClusterOffset.yw * LandscapeParameters.z;
 	return offset_1 + offset_2;
 }
 
@@ -148,32 +155,63 @@ void LandscapeGpuCullingCS(uint2 DispatchThreadId : SV_DispatchThreadID)
 	uint ClusterLod = ClusterLodBufferSRV[CenterLinearIndex];
 	bool InsideNearPlane;
 	bool bIsFrustumVisible = IntersectBox8Plane(RenderData.BoundCenter, RenderData.BoundExtent, InsideNearPlane);
+	uint PackOutputData = 0;
+	uint CurrentLodCount = 0xFFFFFFFF;
 	
 	BRANCH
 	if (!bIsFrustumVisible)
 	{
+		ClusterOutBufferUAV[CenterLinearIndex] = uint2(PackOutputData, CurrentLodCount);
 		return;
 	}
 	
 	//打包对应数据到输出数据中
-	uint PackOutputData = 0;
-	uint DownLod = ClusterInputData_SRV[GetLinearIndexByClusterIndex(int2(0, 1) + (int2)DispatchThreadId)];
-	uint LeftLod = ClusterInputData_SRV[GetLinearIndexByClusterIndex(int2(-1, 0) + (int2) DispatchThreadId)];
-	uint TopLod = ClusterInputData_SRV[GetLinearIndexByClusterIndex(int2(0, -1) + (int2) DispatchThreadId)];
-	uint RightLod = ClusterInputData_SRV[GetLinearIndexByClusterIndex(int2(1, 0) + (int2) DispatchThreadId)];
+	uint DownLod = ClusterLodBufferSRV[GetLinearIndexByClusterIndex(int2(0, 1) + (int2) DispatchThreadId)];
+	uint LeftLod = ClusterLodBufferSRV[GetLinearIndexByClusterIndex(int2(-1, 0) + (int2) DispatchThreadId)];
+	uint TopLod = ClusterLodBufferSRV[GetLinearIndexByClusterIndex(int2(0, -1) + (int2) DispatchThreadId)];
+	uint RightLod = ClusterLodBufferSRV[GetLinearIndexByClusterIndex(int2(1, 0) + (int2) DispatchThreadId)];
 	
 	PackOutputData = PackOutputData | (DispatchThreadId.x & 0xFF);
 	PackOutputData = PackOutputData | ((DispatchThreadId.y << 8) & 0xFF00); // There may be an error in the ARM register?
 	PackOutputData = PackOutputData | ((DownLod << 16) & 0x70000);
 	PackOutputData = PackOutputData | ((LeftLod << 19) & 0x380000);
-	PackOutputData = PackOutputData | ((TopLod << 22) & 0x1C0000);
+	PackOutputData = PackOutputData | ((TopLod << 22) & 0x1C00000);
 	PackOutputData = PackOutputData | ((RightLod << 25) & 0xE000000);
 	PackOutputData = PackOutputData | ((ClusterLod << 28) & 0x70000000);
 		
-	//计算对应LOD级别的offset
-	uint IndirectDrawInstanceCountIndex = ClusterLod * DRAWCOMMAND_SIZE * 1; //InstanceCount 
-	uint OutPutOffset = ClusterLod * TotalCluster;
-	uint CurrentLodCount = 0;
-	InterlockedAdd(DrawCommandBufferUAV[IndirectDrawInstanceCountIndex], 1, CurrentLodCount);
-	ClusterOutBufferUAV[CurrentLodCount + OutPutOffset] = PackOutputData;
+	//统计LOD数量并写入PackData和自身Index到Buffer中
+	InterlockedAdd(ClusterLodCountUAV[ClusterLod], 1, CurrentLodCount);
+	ClusterOutBufferUAV[CenterLinearIndex] = uint2(PackOutputData, CurrentLodCount);
+}
+
+//[Input]
+Buffer<uint2> ClusterOutBufferSRV;
+Buffer<uint> ClusterLodCountSRV;
+
+//[Output]
+RWBuffer<uint> OrderClusterOutBufferUAV;
+RWBuffer<uint> DrawCommandBufferUAV;
+
+//#todo: IndirectDispatch
+[numthreads(GROUP_TILE_SIZE, 1,  1)]
+void LandscapeGpuSortedCS(uint DispatchThreadId : SV_DispatchThreadID)
+{
+	//顺带写入
+	if (DispatchThreadId < 5)
+	{
+		DrawCommandBufferUAV[DispatchThreadId * DRAWCOMMAND_SIZE + 1] = ClusterLodCountSRV[DispatchThreadId];
+	}
+	
+	uint2 PackDataAndReadIndex = ClusterOutBufferSRV[DispatchThreadId];
+	if (PackDataAndReadIndex.y != 0xFFFFFFFF)
+	{
+		uint CurrentClusterLod = ((PackDataAndReadIndex.x >> 28) & 0x7);
+		uint CurrentClusterLodStartIndex = 0;
+		for (uint LodIndex = 0; LodIndex < CurrentClusterLod; ++LodIndex)
+		{
+			CurrentClusterLodStartIndex += ClusterLodCountSRV[LodIndex];
+		}
+		//Write Value
+		OrderClusterOutBufferUAV[PackDataAndReadIndex.y + CurrentClusterLodStartIndex] = PackDataAndReadIndex.x;
+	}
 }

@@ -13,10 +13,8 @@
 
 
 Buffer<uint> LandscapeGpuRenderOutputBuffer;
-
-//Test
-uint TestLodParameter;
-//Test
+Buffer<uint> FirstIndexBuffer;
+uint LodIndexParameters;
 
 #if (ES3_1_PROFILE)
 /* Offset for UV localization for large UV values. */
@@ -403,7 +401,11 @@ FVertexFactoryIntermediates GetVertexFactoryIntermediates(FVertexFactoryInput In
 	FVertexFactoryIntermediates Intermediates;
 	
 	//UnPackData
-	uint PackData = LandscapeGpuRenderOutputBuffer[Input.InstanceId + TestLodParameter * 16];
+	for (uint LodIndex = 0; LodIndex < LodIndexParameters; ++LodIndex)
+	{
+		Input.InstanceId += FirstIndexBuffer[LodIndex];
+	}
+	uint PackData = LandscapeGpuRenderOutputBuffer[Input.InstanceId];
 	uint3 UnPackData_0 = (PackData >> uint3(0, 8, 28)) & uint3(0xff, 0xff, 0x7);
 	uint4 LodDataNeighbor = (PackData >> uint4(16, 19, 22, 25)) & 0x7;
 	uint2 ClusterIndex = UnPackData_0.xy;

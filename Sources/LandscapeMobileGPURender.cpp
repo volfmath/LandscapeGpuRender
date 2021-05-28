@@ -130,7 +130,7 @@ FLandscapeSubmitData FLandscapeSubmitData::CreateLandscapeSubmitData(ULandscapeC
 		//面积递减系数为ScreenSizeRatioDivider
 		float ScreenSizeRatioDivider = FMath::Max(LandscapeComponent->GetLandscapeProxy()->LOD0DistributionSetting, 1.01f);
 		float CurrentScreenSizeRatio = LandscapeComponent->GetLandscapeProxy()->LOD0ScreenSize;
-		uint8 LastLODIndex = LandscapeGpuRenderParameter::ClusterLod;
+		uint8 LastLODIndex = LandscapeGpuRenderParameter::ClusterLodCount - 1;
 		float LOD0ScreenSizeSquared = FMath::Square(CurrentScreenSizeRatio);
 
 		//LOD1
@@ -149,6 +149,9 @@ FLandscapeSubmitData FLandscapeSubmitData::CreateLandscapeSubmitData(ULandscapeC
 		RetSubmitData.LodSettingParameters = FVector4(LastLODScreenSizeSquared, LOD1ScreenSizeSquared, LODOnePlusDistributionScalarSquared, LastLODIndex);
 	}
 
+	//TestBound
+	auto TestBound = LandscapeComponent->Bounds;
+
 	return RetSubmitData;
 }
 
@@ -163,8 +166,8 @@ public:
 	void Bind(const FShaderParameterMap& ParameterMap)
 	{
 		LandscapeGpuRenderOutput.Bind(ParameterMap, TEXT("LandscapeGpuRenderOutputBuffer"));
-
-		TestLodParameter.Bind(ParameterMap, TEXT("TestLodParameter")); //Test
+		FirstIndexBuffer.Bind(ParameterMap, TEXT("FirstIndexBuffer"));
+		LodIndexParameters.Bind(ParameterMap, TEXT("LodIndexParameters")); //Test
 	}
 
 	void GetElementShaderBindings(
@@ -181,16 +184,20 @@ public:
 	{
 		SCOPE_CYCLE_COUNTER(STAT_LandscapeVFDrawTimeVS);
 		const FLandscapeGpuRenderUserData* GpuParameters = reinterpret_cast<const FLandscapeGpuRenderUserData*>(BatchElement.UserData);
-		ShaderBindings.Add(LandscapeGpuRenderOutput, GpuParameters->LandscapeGpuRenderOutputBufferSRV);
-		ShaderBindings.Add(Shader->GetUniformBufferParameter<FLandscapeGpuRenderUniformBuffer>(), GpuParameters->LandscapeGpuRenderUniformBuffer);
 
-		ShaderBindings.Add(TestLodParameter, BatchElement.UserIndex);//Test
+		//#Todo: Batch?
+		ShaderBindings.Add(LandscapeGpuRenderOutput, GpuParameters->LandscapeGpuRenderOutputBufferSRV);
+		ShaderBindings.Add(FirstIndexBuffer, GpuParameters->LandscapeGpuRenderFirstIndexSRV);
+		ShaderBindings.Add(LodIndexParameters, BatchElement.UserIndex);
+
+		ShaderBindings.Add(Shader->GetUniformBufferParameter<FLandscapeGpuRenderUniformBuffer>(), GpuParameters->LandscapeGpuRenderUniformBuffer);
+	
 	}
 
 protected:
 	LAYOUT_FIELD(FShaderResourceParameter, LandscapeGpuRenderOutput)
-
-	LAYOUT_FIELD(FShaderParameter, TestLodParameter) //Test
+	LAYOUT_FIELD(FShaderResourceParameter, FirstIndexBuffer)
+	LAYOUT_FIELD(FShaderParameter, LodIndexParameters) //Test
 };
 
 class FLandscapeGpuRenderVertexFactoryPSParameters : public FVertexFactoryShaderParameters{
@@ -404,7 +411,7 @@ void FLandscapeGpuRenderProxyComponentSceneProxy::CreateRenderThreadResources() 
 
 	//Create and init IndexBuffer	
 	static_assert(LandscapeGpuRenderParameter::ClusterQuadSize * LandscapeGpuRenderParameter::ClusterQuadSize * 6 < 0x10000, ""); //Just support int16
-	IndexBuffers.AddZeroed(LandscapeGpuRenderParameter::ClusterLod);
+	IndexBuffers.AddZeroed(LandscapeGpuRenderParameter::ClusterLodCount);
 	FLandscapeGpuRenderProxyComponentSceneProxy::CreateClusterIndexBuffers<uint16>(IndexBuffers);
 
 	//Create and init VertexFactory
@@ -417,7 +424,7 @@ void FLandscapeGpuRenderProxyComponentSceneProxy::CreateRenderThreadResources() 
 void FLandscapeGpuRenderProxyComponentSceneProxy::DestroyRenderThreadResources() {
 	ensure(VertexFactory != nullptr);
 	ensure(VertexBuffer != nullptr);
-	ensure(IndexBuffers.Num() == LandscapeGpuRenderParameter::ClusterLod);
+	ensure(IndexBuffers.Num() == LandscapeGpuRenderParameter::ClusterLodCount);
 
 	delete VertexFactory;
 	VertexFactory = nullptr;
@@ -465,7 +472,7 @@ void FLandscapeGpuRenderProxyComponentSceneProxy::GetDynamicMeshElements(const T
 		}		
 	}
 #endif
-	for (int LodIndex = 0; LodIndex < LandscapeGpuRenderParameter::ClusterLod; ++LodIndex) {
+	for (int LodIndex = 0; LodIndex < LandscapeGpuRenderParameter::ClusterLodCount; ++LodIndex) {
 		FMeshBatch& MeshBatch = Collector.AllocateMesh();
 		MeshBatch.VertexFactory = VertexFactory;
 		MeshBatch.MaterialRenderProxy = MaterialInterface->GetRenderProxy();

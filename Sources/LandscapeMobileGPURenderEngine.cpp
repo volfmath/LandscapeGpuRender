@@ -9,10 +9,20 @@ ENGINE_API TAutoConsoleVariable<int32> CVarMobileLandscapeGpuRender(
 	ECVF_Scalability
 );
 
+ENGINE_API TAutoConsoleVariable<int32> CVarMobileComputeShaderControl(
+	TEXT("r.GpuDriven.LandscapeComputeShader"),
+	1,
+	TEXT("Enable GpuRender For Landscape"),
+	ECVF_Scalability
+);
+
+
 FLandscapeGpuRenderProxyComponent_RenderThread::FLandscapeGpuRenderProxyComponent_RenderThread()
 	: bLandscapeDirty(false)
 	, NumSections(0)
 	, ClusterSizePerSection(0)
+	, ClusterSizeX(0)
+	, ClusterSizeY(0)
 	, LodSettingParameters(EForceInit::ForceInitToZero)
 	, NumRegisterComponent(0)
 	, LandscapeComponentMin(INT32_MAX, INT32_MAX)
@@ -25,9 +35,11 @@ FLandscapeGpuRenderProxyComponent_RenderThread::~FLandscapeGpuRenderProxyCompone
 	check(NumRegisterComponent == 0);
 	LandscapeClusterLODData_GPU.Release();
 	ComponentOriginAndRadius_GPU.Release();
-	IndirectDrawCommandBuffer_GPU.Release();
 	ClusterInputData_GPU.Release();
 	ClusterOutputData_GPU.Release();
+	ClusterLodCountUAV_GPU.Release();
+	OrderClusterOutBufferUAV_GPU.Release();
+	IndirectDrawCommandBuffer_GPU.Release();
 }
 
 uint32 FLandscapeGpuRenderProxyComponent_RenderThread::GetLinearIndexByClusterIndex(const FIntPoint& ClusterIndex) const {
@@ -60,12 +72,13 @@ void FLandscapeGpuRenderProxyComponent_RenderThread::InitClusterData(const TArra
 	const uint32 ClusterSqureSizePerComponent = ClusterSizePerComponent * ClusterSizePerComponent;
 	for (int32 ComponentY = 0; ComponentY < LandscapeComponentSize.Y; ++ComponentY) {
 		for (int32 ComponentX = 0; ComponentX < LandscapeComponentSize.X; ++ComponentX) {
-			FBoxSphereBounds ComponetnBoxds(EForceInit::ForceInit);
 			uint32 StartIndex = (ComponentX + ComponentY * LandscapeComponentSize.X) * ClusterSqureSizePerComponent;
+			FBox ComponetnBoxds = FBox(EForceInit::ForceInit);
 			for (uint32 LinearIndex = 0; LinearIndex < ClusterSqureSizePerComponent; ++LinearIndex) {
-				ComponetnBoxds = ComponetnBoxds + WorldClusterBounds[StartIndex + LinearIndex];
+				ComponetnBoxds += WorldClusterBounds[StartIndex + LinearIndex].GetBox();
 			}
-			ComponentsOriginAndRadius.Emplace(FVector4(ComponetnBoxds.Origin, ComponetnBoxds.SphereRadius));
+			FBoxSphereBounds SphereBound = FBoxSphereBounds(ComponetnBoxds);
+			ComponentsOriginAndRadius.Emplace(FVector4(SphereBound.Origin, SphereBound.SphereRadius));
 		}
 	}
 }
@@ -77,72 +90,49 @@ void FLandscapeGpuRenderProxyComponent_RenderThread::UpdateAllGPUBuffer() {
 		check(NumRegisterComponent == LandscapeComponentSize.X * LandscapeComponentSize.Y);
 		uint32 ClusterSizePerComponent = ClusterSizePerSection * NumSections;
 		uint32 ClusterSqureSizePerComponent = ClusterSizePerComponent * ClusterSizePerComponent;
+		ClusterSizeX = ClusterSizePerSection * NumSections * LandscapeComponentSize.X;
+		ClusterSizeY = ClusterSizePerSection * NumSections * LandscapeComponentSize.Y;
+
 		check(ClusterSqureSizePerComponent * NumRegisterComponent < 0x10000); //Make sure 
 		
 		//Release Resources
 		LandscapeClusterLODData_GPU.Release();
 		ComponentOriginAndRadius_GPU.Release();
-		IndirectDrawCommandBuffer_GPU.Release();
 		ClusterInputData_GPU.Release();
 		ClusterOutputData_GPU.Release();
-
+		ClusterLodCountUAV_GPU.Release();
+		OrderClusterOutBufferUAV_GPU.Release();
+		IndirectDrawCommandBuffer_GPU.Release();
+		
 		//IndirectDrawBuffer
-		TArray<FDrawIndirectCommandArgs_CPU> IndirectDrawCommandBuffer_CPU;
-		IndirectDrawCommandBuffer_CPU.AddZeroed(LandscapeGpuRenderParameter::ClusterLod);
-		for (int32 DrawElementIndex = 0; DrawElementIndex < IndirectDrawCommandBuffer_CPU.Num(); ++DrawElementIndex) {
-			int32 LodClusterQuadSize = LandscapeGpuRenderParameter::ClusterQuadSize >> DrawElementIndex;
-			auto& DrawCommandBuffer = IndirectDrawCommandBuffer_CPU[DrawElementIndex];
-			DrawCommandBuffer.IndexCount = LodClusterQuadSize * LodClusterQuadSize * 2 * 3;
-			DrawCommandBuffer.InstanceCount = DrawElementIndex < LandscapeGpuRenderParameter::ClusterLod - 1 ? ClusterSqureSizePerComponent : 0;
-			DrawCommandBuffer.FirstIndex = 0;
-			DrawCommandBuffer.VertexOffset = 0;
-			DrawCommandBuffer.FirstInstance = 0;
-		}
-
-		//ClusterInputBuffer, Temo Code
-		//TArray<FLandscapeClusterInputData_CPU> ClusterInputData_CPU;
-		//ClusterInputData_CPU.AddZeroed(ClusterSqureSizePerComponent * NumRegisterComponent);
-		//for (uint32 ClusterIndexY = 0; ClusterIndexY < LandscapeComponentSize.Y * ClusterSizePerComponent; ++ClusterIndexY) {
-		//	for (uint32 ClusterIndexX = 0; ClusterIndexX < LandscapeComponentSize.X * ClusterSizePerComponent; ++ClusterIndexX) {
-		//		uint32 CalculateIndex = ClusterIndexX + ClusterIndexY * ClusterSizePerComponent * LandscapeComponentSize.X;
-		//		ClusterInputData_CPU[CalculateIndex].ClusterIndexX = (ClusterIndexX & 0xFF);
-		//		ClusterInputData_CPU[CalculateIndex].ClusterIndexY = (ClusterIndexY & 0xFF);
-		//	}
-		//}
-
-		//ClusterOutoutBuffer, Temp Code
-		TArray<FLandscapeClusterOutputData_CPU> ClusterOutputData_CPU;
-		ClusterOutputData_CPU.AddZeroed(ClusterSqureSizePerComponent * NumRegisterComponent);
+		TArray<FLandscapeClusterInputData_CPU> ClusterInputData_CPU;
+		ClusterInputData_CPU.AddZeroed(ClusterSqureSizePerComponent * NumRegisterComponent);
 		for (int32 ComponentIndexY = 0; ComponentIndexY < LandscapeComponentSize.Y; ++ComponentIndexY) {
 			for (int32 ComponentIndexX = 0; ComponentIndexX < LandscapeComponentSize.X; ++ComponentIndexX) {
 				for (uint32 LocalClusterIndexY = 0; LocalClusterIndexY < ClusterSizePerComponent; ++LocalClusterIndexY) {
 					for (uint32 LocalClusterIndexX = 0; LocalClusterIndexX < ClusterSizePerComponent; ++LocalClusterIndexX) {
 						FIntPoint GlobalClusterIndex = FIntPoint(LocalClusterIndexX + ComponentIndexX * ClusterSizePerComponent, LocalClusterIndexY + ComponentIndexY * ClusterSizePerComponent);
 						uint32 ClusterIndex = GetLinearIndexByClusterIndex(GlobalClusterIndex);
-						ClusterOutputData_CPU[ClusterIndex].ClusterIndexX = GlobalClusterIndex.X & 0xFF;
-						ClusterOutputData_CPU[ClusterIndex].ClusterIndexY = GlobalClusterIndex.Y & 0xFF;
-						ClusterOutputData_CPU[ClusterIndex].CenterLod = ComponentIndexX + ComponentIndexY * 2; //随便写写测试用,从左上LOD为0开始
+						ClusterInputData_CPU[ClusterIndex].BoundCenter = WorldClusterBounds[ClusterIndex].Origin;
+						ClusterInputData_CPU[ClusterIndex].Pad_0 = 0.f;
+						ClusterInputData_CPU[ClusterIndex].BoundExtent = WorldClusterBounds[ClusterIndex].BoxExtent;
+						ClusterInputData_CPU[ClusterIndex].Pad_1 = 0.f;
 					}
 				}
 			}
 		}
 
-		//Test Lod, assgin lod
-		for (auto& ClusterData : ClusterOutputData_CPU) {
-			ClusterData.DownLod = ClusterOutputData_CPU[GetLinearIndexByClusterIndex(FIntPoint(ClusterData.ClusterIndexX, ClusterData.ClusterIndexY + 1))].CenterLod;
-			ClusterData.LeftLod = ClusterOutputData_CPU[GetLinearIndexByClusterIndex(FIntPoint(ClusterData.ClusterIndexX - 1, ClusterData.ClusterIndexY))].CenterLod;
-			ClusterData.TopLod = ClusterOutputData_CPU[GetLinearIndexByClusterIndex(FIntPoint(ClusterData.ClusterIndexX, ClusterData.ClusterIndexY - 1))].CenterLod;
-			ClusterData.RightLod = ClusterOutputData_CPU[GetLinearIndexByClusterIndex(FIntPoint(ClusterData.ClusterIndexX + 1, ClusterData.ClusterIndexY))].CenterLod;
+		TArray<FDrawIndirectCommandArgs_CPU> IndirectDrawCommandBuffer_CPU;
+		IndirectDrawCommandBuffer_CPU.AddZeroed(LandscapeGpuRenderParameter::ClusterLodCount);
+		for (int32 DrawElementIndex = 0; DrawElementIndex < IndirectDrawCommandBuffer_CPU.Num(); ++DrawElementIndex) {
+			int32 LodClusterQuadSize = LandscapeGpuRenderParameter::ClusterQuadSize >> DrawElementIndex;
+			auto& DrawCommandBuffer = IndirectDrawCommandBuffer_CPU[DrawElementIndex];
+			DrawCommandBuffer.IndexCount = LodClusterQuadSize * LodClusterQuadSize * 2 * 3;
+			DrawCommandBuffer.InstanceCount = 0;
+			DrawCommandBuffer.FirstIndex = 0;
+			DrawCommandBuffer.VertexOffset = 0;
+			DrawCommandBuffer.FirstInstance = 0;
 		}
-
-		//InputData
-		//ClusterInputData_GPU.Initialize(sizeof(FLandscapeClusterInputData_CPU), ClusterInputData_CPU.Num(), BUF_Static);
-		//void* MappingAndBoundData = RHILockStructuredBuffer(ClusterInputData_GPU.Buffer, 0, ClusterInputData_GPU.NumBytes, RLM_WriteOnly);
-		//FMemory::Memcpy(MappingAndBoundData, ClusterInputData_CPU.GetData(), ClusterInputData_GPU.NumBytes);
-		//RHIUnlockStructuredBuffer(ClusterInputData_GPU.Buffer);
-
-		//LodDataBuffer
-		LandscapeClusterLODData_GPU.Initialize(sizeof(FLandscapeClusterLODData_CPU), ClusterSqureSizePerComponent * NumRegisterComponent, PF_R32_UINT, BUF_Static);
 
 		//ComponentData
 		ComponentOriginAndRadius_GPU.Initialize(sizeof(FVector4), ComponentsOriginAndRadius.Num(), PF_A32B32G32R32F, BUF_Static);
@@ -150,11 +140,23 @@ void FLandscapeGpuRenderProxyComponent_RenderThread::UpdateAllGPUBuffer() {
 		FMemory::Memcpy(ComponentDataPtr, ComponentsOriginAndRadius.GetData(), ComponentOriginAndRadius_GPU.NumBytes);
 		RHIUnlockVertexBuffer(ComponentOriginAndRadius_GPU.Buffer);
 
+		//InputData
+		ClusterInputData_GPU.Initialize(sizeof(FLandscapeClusterInputData_CPU), ClusterInputData_CPU.Num(), BUF_Static);
+		void* MappingAndBoundData = RHILockStructuredBuffer(ClusterInputData_GPU.Buffer, 0, ClusterInputData_GPU.NumBytes, RLM_WriteOnly);
+		FMemory::Memcpy(MappingAndBoundData, ClusterInputData_CPU.GetData(), ClusterInputData_GPU.NumBytes);
+		RHIUnlockStructuredBuffer(ClusterInputData_GPU.Buffer);
+
+		//LodDataBuffer
+		LandscapeClusterLODData_GPU.Initialize(sizeof(FLandscapeClusterLODData_CPU), ClusterSqureSizePerComponent * NumRegisterComponent, PF_R32_UINT, BUF_Static);
+
 		//OutputData
-		ClusterOutputData_GPU.Initialize(sizeof(FLandscapeClusterOutputData_CPU), ClusterOutputData_CPU.Num(), PF_R32_UINT, BUF_Static);
-		void* OuputData = RHILockVertexBuffer(ClusterOutputData_GPU.Buffer, 0, ClusterOutputData_GPU.NumBytes, RLM_WriteOnly);
-		FMemory::Memcpy(OuputData, ClusterOutputData_CPU.GetData(), ClusterOutputData_GPU.NumBytes);
-		RHIUnlockVertexBuffer(ClusterOutputData_GPU.Buffer);
+		ClusterOutputData_GPU.Initialize(sizeof(FIntPoint), ClusterSqureSizePerComponent * NumRegisterComponent, PF_R32G32_UINT, BUF_Static);
+
+		//LodCountData
+		ClusterLodCountUAV_GPU.Initialize(sizeof(uint32), LandscapeGpuRenderParameter::ClusterLodCount, PF_R32_UINT, BUF_Static);
+
+		//OrderOutputData
+		OrderClusterOutBufferUAV_GPU.Initialize(sizeof(FLandscapeClusterPackData_CPU), ClusterSqureSizePerComponent * NumRegisterComponent, PF_R32_UINT, BUF_Static);
 
 		//IndirectDrawData
 		IndirectDrawCommandBuffer_GPU.Initialize(sizeof(uint32), IndirectDrawCommandBuffer_CPU.Num() * SLGPUDrivenParameter::IndirectBufferElementSize, PF_R32_UINT, BUF_DrawIndirect | BUF_Static);
@@ -163,7 +165,8 @@ void FLandscapeGpuRenderProxyComponent_RenderThread::UpdateAllGPUBuffer() {
 		RHIUnlockVertexBuffer(IndirectDrawCommandBuffer_GPU.Buffer);
 
 		//UserData
-		LandscapeGpuRenderUserData.LandscapeGpuRenderOutputBufferSRV = ClusterOutputData_GPU.SRV;
+		LandscapeGpuRenderUserData.LandscapeGpuRenderOutputBufferSRV = OrderClusterOutBufferUAV_GPU.SRV;
+		LandscapeGpuRenderUserData.LandscapeGpuRenderFirstIndexSRV = ClusterLodCountUAV_GPU.SRV;
 
 		bLandscapeDirty = false;
 	}
