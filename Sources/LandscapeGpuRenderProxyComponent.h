@@ -24,7 +24,7 @@ class ULandscapeGpuRenderProxyComponent : public UPrimitiveComponent
 	void Init(ULandscapeComponent* LandscapeComponent);
 	void UpdateBoundingInformation(const FBox& ComponentCachedLocalBox, const FIntPoint& ComponentQuadBase);
 	void CheckResources(ULandscapeComponent* LandscapeComponent);
-	void CreateClusterBounding(const FLandscapeSubmitData& LandscapeSubmitData);
+	void CreateClusterBoundingBox(const FLandscapeSubmitData& LandscapeSubmitData);
 	inline bool IsClusterBoundingCreated() const { return bIsClusterBoundingCreated; }
 
 public:

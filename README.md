@@ -7,12 +7,12 @@
 - [x] ComputeLOD - Same to Unreal
 - [x] GPU Culling
 - [ ] Material Fix
-- [ ] SeralizeData
+- [x] SeralizeData
 
 
 
 Optimization
 
-- [ ] Test InstanceOffset
+- [x] Test InstanceOffset
 - [ ] Test ARM Integer register
 - [ ] Remove old data

@@ -1,5 +1,21 @@
 #include "Common.ush"
 
+#define USE_LOW_RESLUTION 1
+
+#if USE_LOW_RESLUTION
+	#define HIZ_SIZE_WIDTH 256.f
+	#define HIZ_SIZE_HEIGHT 128.f
+	#define HIZ_BUFFER_WIDTH 255.f
+	#define HIZ_BUFFER_HEIGHT 127.f
+	#define MaxMipLevel 7.f
+#else
+	#define HIZ_SIZE_WIDTH 512.f
+	#define HIZ_SIZE_HEIGHT 256.f
+	#define HIZ_BUFFER_WIDTH 511.f
+	#define HIZ_BUFFER_HEIGHT 255.f
+	#define MaxMipLevel 8.f
+#endif
+
 #define GROUP_TILE_SIZE     64
 #define GROUP_TILE_SIZE_1	8
 #define DRAWCOMMAND_SIZE	5
@@ -77,17 +93,114 @@ struct ClusterInputData
 	float Pad_1;
 };
 
+float4 ViewParameters[12];
+uint4 LandscapeParameters; //(uint2 LandscapeComponentSize; uint ComponentClusterSize, 0)
 float4 ViewFrustumPermutedPlanes[8];
-uint4 LandscapeParameters; //(LandscapeParameters.xy, LandscapeParameters.z, 0)
-//uint LandscapeParameters.z;
-//uint2 LandscapeComponentSize;
+float4x4 LastFrameViewProjectMatrix;
+
+StructuredBuffer<ClusterInputData> ClusterInputDataSRV;
+StructuredBuffer<float> HzbResourceBufferSRV;
 Buffer<uint> ClusterLodBufferSRV;
-StructuredBuffer<ClusterInputData> ClusterInputData_SRV;
 
 //[Output]
-RWBuffer<uint2> ClusterOutBufferUAV;
+RWBuffer<uint> ClusterOutBufferUAV;
 RWBuffer<uint> ClusterLodCountUAV;
 
+float GetDepthFromBuffer(uint4 CurSamplePos, uint2 CenterSamplePos, uint SampleLevel)
+{
+#if USE_LOW_RESLUTION
+	  uint2 OffsetAndSizeArray[8] =
+    {
+        uint2(0u, 256u),
+        uint2(0x8000u, 128u),
+        uint2(0xA000u, 64u),
+        uint2(0xA800u, 32u),
+        uint2(0xAA00u, 16u),
+        uint2(0xAA80u, 8u),
+        uint2(0xAAA0u, 4u),
+        uint2(0xAAA8u, 2u)
+    };
+
+#else
+	uint2 OffsetAndSizeArray[9] =
+	{
+		uint2(0, 512u),
+		uint2(0x20000, 256u),
+		uint2(0x28000, 128u),
+		uint2(0x2A000, 64u),
+		uint2(0x2A800, 32u),
+		uint2(0x2AA00, 16u),
+		uint2(0x2AA80, 8u),
+		uint2(0x2AAA0, 4u),
+		uint2(0x2AAA8, 2u),
+	};
+#endif
+
+    
+	uint2 OffsetAndSize = OffsetAndSizeArray[SampleLevel];
+	uint4 LocalIndex = CurSamplePos.yyww * OffsetAndSize.yyyy + CurSamplePos.xzxz;
+	uint4 GlobalIndex = LocalIndex + OffsetAndSize.xxxx;
+    
+	uint CenterLocalIndex = CenterSamplePos.y * OffsetAndSize.y + CenterSamplePos.x;
+	uint GlobalCenterIndex = CenterLocalIndex + OffsetAndSize.x;
+  
+	float4 Depth;
+	Depth.x = HzbResourceBufferSRV[GlobalIndex.x];
+	Depth.y = HzbResourceBufferSRV[GlobalIndex.y];
+	Depth.z = HzbResourceBufferSRV[GlobalIndex.z];
+	Depth.w = HzbResourceBufferSRV[GlobalIndex.w];
+	float CenterDepth = HzbResourceBufferSRV[GlobalCenterIndex];
+    
+	float2 Depth_0 = min(Depth.xy, Depth.zw);
+	float Depth_1 = min(Depth_0.x, Depth_0.y);
+	float Depth_2 = min(Depth_1, CenterDepth);
+	return Depth_2;
+}
+
+bool HzbTest(in float3 BoundMin, in float3 BoundMax)
+{
+	float3 Bounds[2] = { BoundMin, BoundMax };
+    
+    // Screen rect from bounds
+	float3 RectMin = float3(100.f, 100.f, 100.f);
+	float3 RectMax = float3(-100.f, -100.f, 0); //UE默认矩阵Z为0~1 
+	UNROLL
+	for (int i = 0; i < 8; i++)
+	{
+		float3 PointSrc;
+		PointSrc.x = Bounds[(i >> 0) & 1].x;
+		PointSrc.y = Bounds[(i >> 1) & 1].y;
+		PointSrc.z = Bounds[(i >> 2) & 1].z;
+
+		float4 PointClip = mul(float4(PointSrc, 1), LastFrameViewProjectMatrix);
+		float3 PointScreen = PointClip.xyz / PointClip.w;
+
+		RectMin = min(RectMin, PointScreen);
+		RectMax = max(RectMax, PointScreen);
+	}
+    
+	float4 Rect = (float4(RectMin.xy, RectMax.xy) * float2(0.5, -0.5).xyxy + float4(0.5, 0.5, 0.5, 0.5)).xwzy; //超出屏幕外时不应该使用saturate,无法计算正确的大小
+	float4 RectPixels = Rect * float4(HIZ_SIZE_WIDTH, HIZ_SIZE_HEIGHT, HIZ_SIZE_WIDTH, HIZ_SIZE_HEIGHT);
+	float2 RectSize = (RectPixels.zw - RectPixels.xy) * 0.5; // + 0.001 *0.5 表示level - 1,因为第0级也是一层
+	float Level = min(max(ceil(log2(max(RectSize.x, RectSize.y))), 0.f), MaxMipLevel);
+	uint SampleLevel = uint(Level);
+    
+    //https://docs.microsoft.com/en-us/windows/win32/direct3d9/nearest-point-sampling
+    //纹理下标应当映射到[-0.5, n - 0.5]
+	float4 SamplePosition = Rect * float4(HIZ_SIZE_WIDTH, HIZ_SIZE_HEIGHT, HIZ_SIZE_WIDTH, HIZ_SIZE_HEIGHT) - 0.5f;
+	SamplePosition = max(SamplePosition, float4(0.f, 0.f, 0.f, 0.f));
+	SamplePosition = min(SamplePosition, float4(HIZ_BUFFER_WIDTH, HIZ_BUFFER_HEIGHT, HIZ_BUFFER_WIDTH, HIZ_BUFFER_HEIGHT));
+	uint4 MaxSamplePos = round(SamplePosition);
+	uint4 CurSamplePos = MaxSamplePos >> SampleLevel;
+	uint2 CenterSamplePos = (MaxSamplePos.xy + MaxSamplePos.zw) >> (SampleLevel + 1); 
+	float FurthestDepth = GetDepthFromBuffer(CurSamplePos, CenterSamplePos, SampleLevel);
+	if (RectMax.z < FurthestDepth)
+	{
+		return false;
+	}
+
+	return true;
+}
 
 bool IntersectBox8Plane(in float3 Center, in float3 Extent, out bool InsideNearPlane)
 {
@@ -130,7 +243,7 @@ uint GetLinearIndexByClusterIndex(in int2 ClusterIndex)
 	uint ClusterSqureSizePerComponent = LandscapeParameters.z * LandscapeParameters.z;
 	uint2 ClusterOffset = ClampSize & (LandscapeParameters.z - 1);
 	uint2 ComponentOffset = ClampSize / LandscapeParameters.z;
-	uint offset_1 = ComponentOffset.y * ClusterSqureSizePerComponent * LandscapeParameters.xy.x + ComponentOffset.x * ClusterSqureSizePerComponent;
+	uint offset_1 = ComponentOffset.y * ClusterSqureSizePerComponent * LandscapeParameters.x + ComponentOffset.x * ClusterSqureSizePerComponent;
 	uint offset_2 = ClusterOffset.x + ClusterOffset.y * LandscapeParameters.z;
 	return offset_1 + offset_2;
 }
@@ -138,54 +251,105 @@ uint GetLinearIndexByClusterIndex(in int2 ClusterIndex)
 uint2 GetLinearIndexByClusterIndexBatch(in uint4 ClusterIndex)
 {
 	uint4 ClampSize = clamp((int4) ClusterIndex, int4(0, 0, 0, 0), int4(LandscapeParameters.xyxy * LandscapeParameters.z) - int4(1, 1, 1, 1));
-	uint4 ClusterOffset = ClampSize & (LandscapeParameters.z - 1);
-	uint4 ComponentOffset = ClampSize / LandscapeParameters.z;
 	uint ClusterSqureSizePerComponent = LandscapeParameters.z * LandscapeParameters.z;
-	uint2 offset_1 = ComponentOffset.yw * ClusterSqureSizePerComponent * LandscapeParameters.xy.x + ComponentOffset.xz * ClusterSqureSizePerComponent;
-	uint2 offset_2 = ClusterOffset.xz + ClusterOffset.yw * LandscapeParameters.z;
+	uint4 ClusterOffset = ClampSize & (LandscapeParameters.z - 1);
+	uint4 ComponentOffset = ClampSize / LandscapeParameters.zzzz;
+	uint2 offset_1 = ComponentOffset.yw * ClusterSqureSizePerComponent * LandscapeParameters.xx + ComponentOffset.xz * ClusterSqureSizePerComponent;
+	uint2 offset_2 = ClusterOffset.xz + ClusterOffset.yw * LandscapeParameters.zz;
 	return offset_1 + offset_2;
 }
 
+groupshared uint ComponentVisible;
+
 [numthreads(GROUP_TILE_SIZE_1, GROUP_TILE_SIZE_1, 1)]
-void LandscapeGpuCullingCS(uint2 DispatchThreadId : SV_DispatchThreadID)
+void LandscapeGpuCullingCS(uint2 DispatchThreadId : SV_DispatchThreadID, uint2 GroupThreadIndex : SV_GroupThreadID)
 {
+	if (all(GroupThreadIndex == uint2(0, 0)))
+	{
+		ComponentVisible = 0;
+	}
+	GroupMemoryBarrierWithGroupSync();
+	
 	//保证一个Wrap访问的内存连续, Cache friend
 	uint CenterLinearIndex = GetLinearIndexByClusterIndex(DispatchThreadId);
-	ClusterInputData RenderData = ClusterInputData_SRV[CenterLinearIndex];
+	ClusterInputData RenderData = ClusterInputDataSRV[CenterLinearIndex];
 	uint ClusterLod = ClusterLodBufferSRV[CenterLinearIndex];
 	bool InsideNearPlane;
-	bool bIsFrustumVisible = IntersectBox8Plane(RenderData.BoundCenter, RenderData.BoundExtent, InsideNearPlane);
 	uint PackOutputData = 0;
 	uint CurrentLodCount = 0xFFFFFFFF;
+	uint UAVIndex = CenterLinearIndex * 2;
+	float3 BoundsMin = RenderData.BoundCenter.xyz - RenderData.BoundExtent.xyz;
+	float3 BoundsMax = RenderData.BoundCenter.xyz + RenderData.BoundExtent.xyz;
+	
+	//Culling
+	bool bIsFrustumVisible = IntersectBox8Plane(RenderData.BoundCenter, RenderData.BoundExtent, InsideNearPlane);
+	bool bIsOcclusionVisible;
+	BRANCH
+	if (bIsFrustumVisible && InsideNearPlane)
+	{
+		bIsOcclusionVisible = HzbTest(BoundsMin, BoundsMax);
+	}
+	else
+	{
+		//bIsOcclusionVisible equals bIsFrustumVisible or !bIsFrustumVisible
+		bIsOcclusionVisible = bIsFrustumVisible;
+	}
+	InterlockedOr(ComponentVisible, (uint)bIsOcclusionVisible);
+	GroupMemoryBarrierWithGroupSync();
+	
+	bool PassCulling = bIsFrustumVisible && ComponentVisible != 0;
+	//((ClusterLod > 0 && ComponentVisible != 0) || (ClusterLod == 0 && bIsOcclusionVisible));
 	
 	BRANCH
-	if (!bIsFrustumVisible)
+	if (PassCulling)
 	{
-		ClusterOutBufferUAV[CenterLinearIndex] = uint2(PackOutputData, CurrentLodCount);
-		return;
-	}
+		//打包对应数据到输出数据中
+		uint2 DownAndLeftLod = GetLinearIndexByClusterIndexBatch(int4(0, 1, -1, 0) + int4(DispatchThreadId.xyxy));
+		uint2 TopAndRightLod = GetLinearIndexByClusterIndexBatch(int4(0, -1, 1, 0) + int4(DispatchThreadId.xyxy));
+		uint DownLod = ClusterLodBufferSRV[DownAndLeftLod.x]; //ClusterLodBufferSRV[GetLinearIndexByClusterIndex(int2(0, 1) + (int2) DispatchThreadId)];
+		uint LeftLod = ClusterLodBufferSRV[DownAndLeftLod.y]; //ClusterLodBufferSRV[GetLinearIndexByClusterIndex(int2(-1, 0) + (int2) DispatchThreadId)];
+		uint TopLod = ClusterLodBufferSRV[TopAndRightLod.x]; //ClusterLodBufferSRV[GetLinearIndexByClusterIndex(int2(0, -1) + (int2) DispatchThreadId)];
+		uint RightLod = ClusterLodBufferSRV[TopAndRightLod.y]; //ClusterLodBufferSRV[GetLinearIndexByClusterIndex(int2(1, 0) + (int2) DispatchThreadId)];
 	
-	//打包对应数据到输出数据中
-	uint DownLod = ClusterLodBufferSRV[GetLinearIndexByClusterIndex(int2(0, 1) + (int2) DispatchThreadId)];
-	uint LeftLod = ClusterLodBufferSRV[GetLinearIndexByClusterIndex(int2(-1, 0) + (int2) DispatchThreadId)];
-	uint TopLod = ClusterLodBufferSRV[GetLinearIndexByClusterIndex(int2(0, -1) + (int2) DispatchThreadId)];
-	uint RightLod = ClusterLodBufferSRV[GetLinearIndexByClusterIndex(int2(1, 0) + (int2) DispatchThreadId)];
-	
-	PackOutputData = PackOutputData | (DispatchThreadId.x & 0xFF);
-	PackOutputData = PackOutputData | ((DispatchThreadId.y << 8) & 0xFF00); // There may be an error in the ARM register?
-	PackOutputData = PackOutputData | ((DownLod << 16) & 0x70000);
-	PackOutputData = PackOutputData | ((LeftLod << 19) & 0x380000);
-	PackOutputData = PackOutputData | ((TopLod << 22) & 0x1C00000);
-	PackOutputData = PackOutputData | ((RightLod << 25) & 0xE000000);
-	PackOutputData = PackOutputData | ((ClusterLod << 28) & 0x70000000);
+		PackOutputData = PackOutputData | (DispatchThreadId.x & 0xFF);
+		PackOutputData = PackOutputData | ((DispatchThreadId.y << 8) & 0xFF00); // There may be an error in the ARM register?
+		PackOutputData = PackOutputData | ((DownLod << 16) & 0x70000);
+		PackOutputData = PackOutputData | ((LeftLod << 19) & 0x380000);
+		PackOutputData = PackOutputData | ((TopLod << 22) & 0x1C00000);
+		PackOutputData = PackOutputData | ((RightLod << 25) & 0xE000000);
+		PackOutputData = PackOutputData | ((ClusterLod << 28) & 0x70000000);
 		
 	//统计LOD数量并写入PackData和自身Index到Buffer中
-	InterlockedAdd(ClusterLodCountUAV[ClusterLod], 1, CurrentLodCount);
-	ClusterOutBufferUAV[CenterLinearIndex] = uint2(PackOutputData, CurrentLodCount);
+		InterlockedAdd(ClusterLodCountUAV[ClusterLod], 1, CurrentLodCount);
+		ClusterOutBufferUAV[UAVIndex] = PackOutputData;
+		ClusterOutBufferUAV[UAVIndex + 1] = CurrentLodCount;
+	}
+	else
+	{
+		ClusterOutBufferUAV[UAVIndex] = PackOutputData;
+		ClusterOutBufferUAV[UAVIndex + 1] = CurrentLodCount;
+	}
+	
+	//BRANCH
+	//if (ClusterLod > 0)
+	//{
+	//	if (ComponentVisible != 0)
+	//	{
+	//		ClusterOutBufferUAV[UAVIndex] = PackOutputData;
+	//		ClusterOutBufferUAV[UAVIndex + 1] = CurrentLodCount;
+	//		return;
+	//	}
+	//}
+	//else if (!bIsOcclusionVisible)
+	//{
+	//	ClusterOutBufferUAV[UAVIndex] = PackOutputData;
+	//	ClusterOutBufferUAV[UAVIndex + 1] = CurrentLodCount;
+	//	return;
+	//}
 }
 
 //[Input]
-Buffer<uint2> ClusterOutBufferSRV;
+Buffer<uint> ClusterOutBufferSRV;
 Buffer<uint> ClusterLodCountSRV;
 
 //[Output]
@@ -196,22 +360,24 @@ RWBuffer<uint> DrawCommandBufferUAV;
 [numthreads(GROUP_TILE_SIZE, 1,  1)]
 void LandscapeGpuSortedCS(uint DispatchThreadId : SV_DispatchThreadID)
 {
-	//顺带写入
+	//Incidental write, it's lod count
 	if (DispatchThreadId < 5)
 	{
 		DrawCommandBufferUAV[DispatchThreadId * DRAWCOMMAND_SIZE + 1] = ClusterLodCountSRV[DispatchThreadId];
 	}
 	
-	uint2 PackDataAndReadIndex = ClusterOutBufferSRV[DispatchThreadId];
-	if (PackDataAndReadIndex.y != 0xFFFFFFFF)
+	uint PackData = ClusterOutBufferSRV[DispatchThreadId * 2];
+	uint ReadIndex = ClusterOutBufferSRV[DispatchThreadId * 2 + 1];
+	
+	if (ReadIndex != 0xFFFFFFFF)
 	{
-		uint CurrentClusterLod = ((PackDataAndReadIndex.x >> 28) & 0x7);
+		uint CurrentClusterLod = ((PackData >> 28) & 0x7);
 		uint CurrentClusterLodStartIndex = 0;
 		for (uint LodIndex = 0; LodIndex < CurrentClusterLod; ++LodIndex)
 		{
 			CurrentClusterLodStartIndex += ClusterLodCountSRV[LodIndex];
 		}
 		//Write Value
-		OrderClusterOutBufferUAV[PackDataAndReadIndex.y + CurrentClusterLodStartIndex] = PackDataAndReadIndex.x;
+		OrderClusterOutBufferUAV[ReadIndex + CurrentClusterLodStartIndex] = PackData;
 	}
 }

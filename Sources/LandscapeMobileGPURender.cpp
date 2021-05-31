@@ -3,6 +3,7 @@
 #include "MeshMaterialShader.h"
 #include "SceneView.h"
 #include "MobileGpuDriven.h"
+#include "LandscapeGpuRenderProxyComponent.h"
 
 IMPLEMENT_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeGpuRenderUniformBuffer, "LandscapeGpuRenderUniformBuffer");
 
@@ -68,46 +69,45 @@ void FMobileLandscapeGPURenderSystem_GameThread::RegisterGPURenderLandscapeEntit
 			}
 
 			if (!ComponentRef->IsClusterBoundingCreated()) {
-				ComponentRef->CreateClusterBounding(SubmitToRenderThreadComponentData);
+				ComponentRef->CreateClusterBoundingBox(SubmitToRenderThreadComponentData);
 			}
 		}
 	}
 }
 
 void FMobileLandscapeGPURenderSystem_GameThread::UnRegisterGPURenderLandscapeEntity(ULandscapeComponent* LandscapeComponent) {
-	const bool bMobileFeatureLevel = GEngine->GetDefaultWorldFeatureLevel() == ERHIFeatureLevel::ES3_1 || LandscapeComponent->GetWorld()->FeatureLevel == ERHIFeatureLevel::ES3_1;
-	if (CVarMobileLandscapeGpuRender.GetValueOnGameThread() != 0 && bMobileFeatureLevel) {
-		check(IsInGameThread());
-		check(LandscapeComponent->GetWorld());
-		check(LandscapeComponent->GetLandscapeProxy());
-		uint32 UniqueWorldIndex = LandscapeComponent->GetWorld()->GetUniqueID();
-		FMobileLandscapeGPURenderSystem_GameThread** FoundSystemPtr = LandscapeGPURenderSystem_GameThread.Find(UniqueWorldIndex);
-		if (FoundSystemPtr) {
-
-			//System Release
-			FMobileLandscapeGPURenderSystem_GameThread* FoundSystem = *FoundSystemPtr;
-			FoundSystem->NumAllRegisterComponents_GameThread -= 1;
-			if (FoundSystem->NumAllRegisterComponents_GameThread == 0) {
-				LandscapeGPURenderSystem_GameThread.Remove(UniqueWorldIndex);
-			}
-
-			//Component Release
-			const FGuid& LandscapeGuid = LandscapeComponent->GetLandscapeProxy()->GetLandscapeGuid();
-			ULandscapeGpuRenderProxyComponent* ComponentRef = FoundSystem->LandscapeGpuRenderPeoxyComponens_GameThread.FindChecked(LandscapeGuid);
-			ComponentRef->NumComponents -= 1;
-			if (ComponentRef->NumComponents == 0) {
-				ComponentRef->DestroyComponent(); //Or automatically release by GC
-				FoundSystem->LandscapeGpuRenderPeoxyComponens_GameThread.Remove(LandscapeGuid);
-			}
-
-			//Submit to renderthread
-			const FLandscapeSubmitData& SubmitToRenderThreadComponentData = FLandscapeSubmitData::CreateLandscapeSubmitData(LandscapeComponent);
-			ENQUEUE_RENDER_COMMAND(UnRegisterGPURenderLandscapeEntity)(
-				[SubmitToRenderThreadComponentData](FRHICommandList& RHICmdList) {
-					FMobileLandscapeGPURenderSystem_RenderThread::UnRegisterGPURenderLandscapeEntity_RenderThread(SubmitToRenderThreadComponentData);
-				}
-			);
+	//const bool bMobileFeatureLevel = GEngine->GetDefaultWorldFeatureLevel() == ERHIFeatureLevel::ES3_1 || LandscapeComponent->GetWorld()->FeatureLevel == ERHIFeatureLevel::ES3_1;
+	//if (CVarMobileLandscapeGpuRender.GetValueOnGameThread() != 0 && bMobileFeatureLevel) {
+	//Uninstallation does not need to judge the flag, because only the registered Component can query the valid information
+	check(IsInGameThread());
+	check(LandscapeComponent->GetWorld());
+	check(LandscapeComponent->GetLandscapeProxy());
+	uint32 UniqueWorldIndex = LandscapeComponent->GetWorld()->GetUniqueID();
+	FMobileLandscapeGPURenderSystem_GameThread** FoundSystemPtr = LandscapeGPURenderSystem_GameThread.Find(UniqueWorldIndex);
+	if (FoundSystemPtr) {
+		//System Release
+		FMobileLandscapeGPURenderSystem_GameThread* FoundSystem = *FoundSystemPtr;
+		FoundSystem->NumAllRegisterComponents_GameThread -= 1;
+		if (FoundSystem->NumAllRegisterComponents_GameThread == 0) {
+			LandscapeGPURenderSystem_GameThread.Remove(UniqueWorldIndex);
 		}
+
+		//Component Release
+		const FGuid& LandscapeGuid = LandscapeComponent->GetLandscapeProxy()->GetLandscapeGuid();
+		ULandscapeGpuRenderProxyComponent* ComponentRef = FoundSystem->LandscapeGpuRenderPeoxyComponens_GameThread.FindChecked(LandscapeGuid);
+		ComponentRef->NumComponents -= 1;
+		if (ComponentRef->NumComponents == 0) {
+			ComponentRef->DestroyComponent(); //Or automatically release by GC
+			FoundSystem->LandscapeGpuRenderPeoxyComponens_GameThread.Remove(LandscapeGuid);
+		}
+
+		//Submit to renderthread
+		const FLandscapeSubmitData& SubmitToRenderThreadComponentData = FLandscapeSubmitData::CreateLandscapeSubmitData(LandscapeComponent);
+		ENQUEUE_RENDER_COMMAND(UnRegisterGPURenderLandscapeEntity)(
+			[SubmitToRenderThreadComponentData](FRHICommandList& RHICmdList) {
+				FMobileLandscapeGPURenderSystem_RenderThread::UnRegisterGPURenderLandscapeEntity_RenderThread(SubmitToRenderThreadComponentData);
+			}
+		);
 	}
 }
 
@@ -385,6 +385,10 @@ void FLandscapeGpuRenderProxyComponentSceneProxy::OnTransformChanged() {
 	LandscapeGpuRenderParams.HeightmapUVParameter = HeightmapUVParameter;
 	LandscapeGpuRenderParams.LocalToWorldNoScaling = LocalToWorldNoScaling;
 
+	//int32 WeightmapSize = ComponentSizeVerts;
+	//WeightmapScaleBias = FVector4(1.0f / (float)WeightmapSize, 1.0f / (float)WeightmapSize, 0.5f / (float)WeightmapSize, 0.5f / (float)WeightmapSize);
+	//WeightmapSubsectionOffset = (float)(SubsectionSizeQuads + 1) / (float)WeightmapSize;
+
 	//SetHeightmap
 	LandscapeGpuRenderParams.HeightmapTexture = HeightmapTexture->TextureReference.TextureReferenceRHI;
 	LandscapeGpuRenderParams.HeightmapTextureSampler = TStaticSamplerState<SF_Point>::GetRHI();
@@ -467,8 +471,12 @@ void FLandscapeGpuRenderProxyComponentSceneProxy::GetDynamicMeshElements(const T
 
 #if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 	if (ViewFamily.EngineShowFlags.Bounds) {
-		for (const FBoxSphereBounds& DrawBounds : GpuRenderData.WorldClusterBounds) {
-			DrawWireBox(Collector.GetPDI(0), DrawBounds.GetBox(), FColor(72, 72, 255), SDPG_World);
+		FColor StartingColor = FColor(100, 0, 0);
+		for (const FBoxSphereBounds& DrawBounds : GpuRenderData.WorldClusterBounds) {		
+			DrawWireBox(Collector.GetPDI(0), DrawBounds.GetBox(), StartingColor, SDPG_World);
+			StartingColor.R += 5;
+			StartingColor.G += 5;
+			StartingColor.B += 5;
 		}		
 	}
 #endif

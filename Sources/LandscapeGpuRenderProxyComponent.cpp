@@ -182,118 +182,14 @@ void ULandscapeGpuRenderProxyComponent::CheckResources(ULandscapeComponent* Land
 	check(HeightmapTexture == LandscapeComponent->HeightmapTexture);
 }
 
-void ULandscapeGpuRenderProxyComponent::CreateClusterBounding(const FLandscapeSubmitData& LandscapeSubmitData) {
-	FVector BoundingSize = ProxyLocalBox.GetSize();
-
-	//The total section size of the landscape
-	const uint32 SectionSizeX = static_cast<uint32>(BoundingSize.X) / SectionSizeQuads;
-	const uint32 SectionSizeY = static_cast<uint32>(BoundingSize.Y) / SectionSizeQuads;
-	const uint32 LandscapeComponentSizeX = SectionSizeX / ComponentSectionSize;
-	const uint32 LandscapeComponentSizeY = SectionSizeY / ComponentSectionSize;
-	const uint32 SectionVerts = SectionSizeQuads + 1;
-	
-	//Cluster parameters
-	const uint32 ClusterSizePerSection = (SectionSizeQuads + 1) / LandscapeGpuRenderParameter::ClusterQuadSize;
-	const uint32 ClusterSizeX = ClusterSizePerSection * SectionSizeX;
-	const uint32 ClusterSizeY = ClusterSizePerSection * SectionSizeY;
-	const uint32 ClusterSizePerComponent = ClusterSizePerSection * ComponentSectionSize;
-	const uint32 ClusterSqureSizePerComponent = ClusterSizePerComponent * ClusterSizePerComponent;
-	check(SectionSizeX * SectionSizeY == NumComponents * ComponentSectionSize * ComponentSectionSize);
-
-	//Check Heightmap
-	uint32 HeightMapSizeX = SectionVerts * SectionSizeX;
-	uint32 HeightMapSizeY = SectionVerts * SectionSizeY;
-
-	//CPU读取贴图必须满足如下3个条件才能从PlatformData读取数据
-	//	CompressionSettings 是否为VectorDisplacementmap。
-	//	MipGenSettings 是否为NoMipmaps。
-	//	SRGB 是否为未勾选状态。
-	//#TODO: 干掉Mip
-	//#TODO: 序列化数据,因为高度数据没有存放在cpu中,Runtime下无法获取
-#if WITH_EDITOR
-	FColor* HeightMapData = reinterpret_cast<FColor*>(HeightmapTexture->Source.LockMip(0));
-	//check(HeightMapSizeX >= static_cast<uint32>(HeightmapTexture->GetSizeX()) && HeightMapSizeY >= static_cast<uint32>(HeightmapTexture->GetSizeY()));
-	//FTexture2DMipMap& MipData = HeightmapTexture->PlatformData->Mips[0];
-	//FColor* HeightMapData = reinterpret_cast<FColor*>(MipData.BulkData.Lock(LOCK_READ_ONLY));
-#endif
-
-	//Calculate the BoundingBox
-	//The vertices are exactly aligned to the power of 2, so there is no need to calculate whether they are on the edge or clamp
-	//The memory layout is unified for each Component linear arrangement
-	TArray<FBox> SubmitToRenderThreadBoundingBox;
-	SubmitToRenderThreadBoundingBox.Reserve(ClusterSizeX * ClusterSizeY);
-
-	for (uint32 CompoenntY = 0; CompoenntY < LandscapeComponentSizeY; ++CompoenntY) {
-		for (uint32 ComponentX = 0; ComponentX < LandscapeComponentSizeX; ++ComponentX) {
-			for (uint32 LocalClusterIndexY = 0; LocalClusterIndexY < ClusterSizePerComponent; ++LocalClusterIndexY) {
-				for (uint32 LocalClusterIndexX = 0; LocalClusterIndexX < ClusterSizePerComponent; ++LocalClusterIndexX) {
-					FIntPoint GlobalClusterIndex = FIntPoint(LocalClusterIndexX + ComponentX * ClusterSizePerComponent, LocalClusterIndexY + CompoenntY * ClusterSizePerComponent);
-					//FLandscapeGpuRenderProxyComponent_RenderThread::GetLinearIndexByClusterIndex(GlobalClusterIndex);
-					//Create Box
-					FVector VertexStartPos = FVector(
-						(GlobalClusterIndex.X & (ClusterSizePerSection - 1)) * LandscapeGpuRenderParameter::ClusterQuadSize + GlobalClusterIndex.X / ClusterSizePerSection * SectionSizeQuads,
-						(GlobalClusterIndex.Y & (ClusterSizePerSection - 1)) * LandscapeGpuRenderParameter::ClusterQuadSize + GlobalClusterIndex.Y / ClusterSizePerSection * SectionSizeQuads,
-						0.f
-					);
-
-					FVector VertexEndPos = FVector(
-						((GlobalClusterIndex.X + 1) & (ClusterSizePerSection - 1)) * LandscapeGpuRenderParameter::ClusterQuadSize + (GlobalClusterIndex.X + 1) / ClusterSizePerSection * SectionSizeQuads,
-						((GlobalClusterIndex.Y + 1) & (ClusterSizePerSection - 1)) * LandscapeGpuRenderParameter::ClusterQuadSize + (GlobalClusterIndex.Y + 1) / ClusterSizePerSection * SectionSizeQuads,
-						0.f
-					);
-
-					FBox& BoxRef = SubmitToRenderThreadBoundingBox.Emplace_GetRef(VertexStartPos, VertexEndPos);
-					//Calculte Vertex
-					for (uint32 VertexY = 0; VertexY < LandscapeGpuRenderParameter::ClusterQuadSize; ++VertexY) {
-						for (uint32 VertexX = 0; VertexX < LandscapeGpuRenderParameter::ClusterQuadSize; ++VertexX) {
-							//SampleIndex use VertSize instead of SectionQuadsize
-							uint32 SampleX = VertexX + (GlobalClusterIndex.X & (ClusterSizePerSection - 1)) * LandscapeGpuRenderParameter::ClusterQuadSize
-								+ GlobalClusterIndex.X / ClusterSizePerSection * SectionVerts;
-							uint32 SampleY = (VertexY + GlobalClusterIndex.Y * LandscapeGpuRenderParameter::ClusterQuadSize) * HeightMapSizeX;
-							uint32 HeightMapSampleIndex = SampleX + SampleY;
-							const auto& HeightValue = HeightMapData[HeightMapSampleIndex];
-							float VertexHeight = LandscapeDataAccess::GetLocalHeight(static_cast<uint16>(HeightValue.R << 8u | HeightValue.G));
-
-							//Update the Box
-							BoxRef.Min.Z = FMath::Min(BoxRef.Min.Z, VertexHeight);
-							BoxRef.Max.Z = FMath::Max(BoxRef.Max.Z, VertexHeight);
-						}
-					}
-				}
-			}
-		}
-	}
-	//for (uint32 ClusterIndexY = 0; ClusterIndexY < ClusterSizeY; ++ClusterIndexY) {
-	//	for (uint32 ClusterIndexX = 0; ClusterIndexX < ClusterSizeX; ++ClusterIndexX) {
-	//		//Create Box
-	//		FVector VertexStartPos = FVector(
-	//			(ClusterIndexX & (ClusterSizePerSection - 1)) * LandscapeGpuRenderParameter::ClusterQuadSize + ClusterIndexX / ClusterSizePerSection * SectionSizeQuads,
-	//			(ClusterIndexY & (ClusterSizePerSection - 1)) * LandscapeGpuRenderParameter::ClusterQuadSize + ClusterIndexY / ClusterSizePerSection * SectionSizeQuads,
-	//			0.f
-	//		);
-
-	//		FVector VertexEndPos = FVector(
-	//			((ClusterIndexX + 1) & (ClusterSizePerSection - 1)) * LandscapeGpuRenderParameter::ClusterQuadSize + (ClusterIndexX + 1) / ClusterSizePerSection * SectionSizeQuads,
-	//			((ClusterIndexY + 1) & (ClusterSizePerSection - 1)) * LandscapeGpuRenderParameter::ClusterQuadSize + (ClusterIndexY + 1) / ClusterSizePerSection * SectionSizeQuads,
-	//			0.f
-	//		);
-
-	//		FBox& BoxRef = SubmitToRenderThreadBoundingBox.Emplace_GetRef(VertexStartPos, VertexEndPos);
-
-	//	}
-	//}
-
-#if WITH_EDITOR
-	HeightmapTexture->Source.UnlockMip(0);
-#endif
-
+void ULandscapeGpuRenderProxyComponent::CreateClusterBoundingBox(const FLandscapeSubmitData& LandscapeSubmitData) {
+	const TArray<FBox>& SubmitToRenderThreadBoundingBox = GetLandscapeProxy()->GetClusterBoundingBox(ProxyLocalBox);
 	FMatrix LocalToWorldMatrix = GetRenderMatrix();
 	ENQUEUE_RENDER_COMMAND(RegisterGPURenderLandscapeEntity)(
-		[ClusterBoundingArray{ MoveTemp(SubmitToRenderThreadBoundingBox)}, LandscapeSubmitData, LocalToWorldMatrix](FRHICommandList& RHICmdList) {
+		[&SubmitToRenderThreadBoundingBox, LandscapeSubmitData, LocalToWorldMatrix](FRHICommandList& RHICmdList) {
 			auto& RenderComponent = FMobileLandscapeGPURenderSystem_RenderThread::GetLandscapeGPURenderComponent_RenderThread(LandscapeSubmitData.UniqueWorldId, LandscapeSubmitData.LandscapeKey);
-			RenderComponent.InitClusterData(ClusterBoundingArray, LocalToWorldMatrix);
+			RenderComponent.InitClusterData(SubmitToRenderThreadBoundingBox, LocalToWorldMatrix);
 		}
 	);
-
 	bIsClusterBoundingCreated = true;
 }

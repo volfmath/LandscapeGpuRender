@@ -150,7 +150,8 @@ void FLandscapeGpuRenderProxyComponent_RenderThread::UpdateAllGPUBuffer() {
 		LandscapeClusterLODData_GPU.Initialize(sizeof(FLandscapeClusterLODData_CPU), ClusterSqureSizePerComponent * NumRegisterComponent, PF_R32_UINT, BUF_Static);
 
 		//OutputData
-		ClusterOutputData_GPU.Initialize(sizeof(FIntPoint), ClusterSqureSizePerComponent * NumRegisterComponent, PF_R32G32_UINT, BUF_Static);
+		check(ClusterSqureSizePerComponent * NumRegisterComponent < 65536);
+		ClusterOutputData_GPU.Initialize(sizeof(uint32), ClusterSqureSizePerComponent * NumRegisterComponent * 2, PF_R32_UINT, BUF_Static);
 
 		//LodCountData
 		ClusterLodCountUAV_GPU.Initialize(sizeof(uint32), LandscapeGpuRenderParameter::ClusterLodCount, PF_R32_UINT, BUF_Static);

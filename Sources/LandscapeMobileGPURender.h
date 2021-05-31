@@ -7,8 +7,8 @@
 #include "LandscapeRender.h"
 #include "Runtime/Landscape/Private/LandscapePrivate.h"
 #include "LandscapeMobileGPURenderEngine.h"
-#include "LandscapeGpuRenderProxyComponent.h"
 
+class ULandscapeGpuRenderProxyComponent;
 struct FLandscapeClusterVertex;
 
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeGpuRenderUniformBuffer, LANDSCAPE_API)

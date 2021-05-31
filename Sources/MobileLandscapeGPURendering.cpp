@@ -76,8 +76,12 @@ public:
 	{
 		LandscapeParameters.Bind(Initializer.ParameterMap, TEXT("LandscapeParameters"));
 		ViewFrustumPermutedPlanes.Bind(Initializer.ParameterMap, TEXT("ViewFrustumPermutedPlanes"));
-		ClusterInputData_SRV.Bind(Initializer.ParameterMap, TEXT("ClusterInputData_SRV"));
+		LastFrameViewProjectMatrix.Bind(Initializer.ParameterMap, TEXT("LastFrameViewProjectMatrix"));
+
+		ClusterInputDataSRV.Bind(Initializer.ParameterMap, TEXT("ClusterInputDataSRV"));
+		HzbResourceBufferSRV.Bind(Initializer.ParameterMap, TEXT("HzbResourceBufferSRV"));
 		ClusterLodBufferSRV.Bind(Initializer.ParameterMap, TEXT("ClusterLodBufferSRV"));
+
 		ClusterOutBufferUAV.Bind(Initializer.ParameterMap, TEXT("ClusterOutBufferUAV"));
 		ClusterLodCountUAV.Bind(Initializer.ParameterMap, TEXT("ClusterLodCountUAV"));
 	}
@@ -99,17 +103,21 @@ public:
 
 		SetShaderValue(RHICmdList, RHICmdList.GetBoundComputeShader(), LandscapeParameters, PackConstBuffer);
 		SetShaderValueArray(RHICmdList, RHICmdList.GetBoundComputeShader(), ViewFrustumPermutedPlanes, View.ViewFrustum.PermutedPlanes.GetData(), View.ViewFrustum.PermutedPlanes.Num());
+		SetShaderValue(RHICmdList, RHICmdList.GetBoundComputeShader(), LastFrameViewProjectMatrix, View.PrevViewInfo.ViewMatrices.GetViewProjectionMatrix());
 
 		//Barrier Batch
 		FRHITransitionInfo GpuCullingPassBarriers[] = {
 			FRHITransitionInfo(RenderComponentData.LandscapeClusterLODData_GPU.UAV, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute), //RAW
 			FRHITransitionInfo(RenderComponentData.ClusterOutputData_GPU.UAV, ERHIAccess::SRVCompute, ERHIAccess::UAVCompute), //WAR
-			FRHITransitionInfo(RenderComponentData.ClusterLodCountUAV_GPU.UAV, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute) //WAW
+			FRHITransitionInfo(RenderComponentData.ClusterLodCountUAV_GPU.UAV, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute), //WAW
+			//#todo: batch?
+			FRHITransitionInfo(FMobileHzbSystem::GetStructuredBufferRes()->UAV, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute), //RAW
 		};
 		RHICmdList.Transition(MakeArrayView(GpuCullingPassBarriers, UE_ARRAY_COUNT(GpuCullingPassBarriers)));
 
-		SetSRVParameter(RHICmdList, RHICmdList.GetBoundComputeShader(), ClusterInputData_SRV, RenderComponentData.ClusterInputData_GPU.SRV);
+		SetSRVParameter(RHICmdList, RHICmdList.GetBoundComputeShader(), ClusterInputDataSRV, RenderComponentData.ClusterInputData_GPU.SRV);
 		SetSRVParameter(RHICmdList, RHICmdList.GetBoundComputeShader(), ClusterLodBufferSRV, RenderComponentData.LandscapeClusterLODData_GPU.SRV);
+		SetSRVParameter(RHICmdList, RHICmdList.GetBoundComputeShader(), HzbResourceBufferSRV, FMobileHzbSystem::GetStructuredBufferRes()->SRV);
 		SetUAVParameter(RHICmdList, RHICmdList.GetBoundComputeShader(), ClusterOutBufferUAV, RenderComponentData.ClusterOutputData_GPU.UAV);
 		SetUAVParameter(RHICmdList, RHICmdList.GetBoundComputeShader(), ClusterLodCountUAV, RenderComponentData.ClusterLodCountUAV_GPU.UAV);
 	}
@@ -122,7 +130,9 @@ public:
 private:
 	LAYOUT_FIELD(FShaderParameter, LandscapeParameters);
 	LAYOUT_FIELD(FShaderParameter, ViewFrustumPermutedPlanes);
-	LAYOUT_FIELD(FShaderResourceParameter, ClusterInputData_SRV);
+	LAYOUT_FIELD(FShaderParameter, LastFrameViewProjectMatrix);
+	LAYOUT_FIELD(FShaderResourceParameter, ClusterInputDataSRV);
+	LAYOUT_FIELD(FShaderResourceParameter, HzbResourceBufferSRV);
 	LAYOUT_FIELD(FShaderResourceParameter, ClusterLodBufferSRV);
 	LAYOUT_FIELD(FShaderResourceParameter, ClusterOutBufferUAV);
 	LAYOUT_FIELD(FShaderResourceParameter, ClusterLodCountUAV);
